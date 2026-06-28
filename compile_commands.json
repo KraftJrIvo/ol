@@ -1,0 +1,254 @@
+[
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -D_CRT_SECURE_NO_WARNINGS /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /FoCMakeFiles\\embedfile.dir\\src\\util\\embedfile.c.obj /FdCMakeFiles\\embedfile.dir\\ -c -- E:\\cool\\projects2\\raylib\\OL\\src\\util\\embedfile.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\src\\util\\embedfile.c",
+  "output": "CMakeFiles\\embedfile.dir\\src\\util\\embedfile.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\src -IE:\\cool\\projects2\\raylib\\OL\\build -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include /DWIN32 /D_WINDOWS /GR /EHsc /O2 /Ob2 /DNDEBUG -std:c++20 -MD /utf-8 /EHsc /FoCMakeFiles\\ol_engine.dir\\src\\engine\\world.cpp.obj /FdCMakeFiles\\ol_engine.dir\\ol_engine.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\src\\engine\\world.cpp",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\src\\engine\\world.cpp",
+  "output": "CMakeFiles\\ol_engine.dir\\src\\engine\\world.cpp.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\src -IE:\\cool\\projects2\\raylib\\OL\\build -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include /DWIN32 /D_WINDOWS /GR /EHsc /O2 /Ob2 /DNDEBUG -std:c++20 -MD /utf-8 /EHsc /FoCMakeFiles\\ol_engine.dir\\src\\engine\\physics.cpp.obj /FdCMakeFiles\\ol_engine.dir\\ol_engine.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\src\\engine\\physics.cpp",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\src\\engine\\physics.cpp",
+  "output": "CMakeFiles\\ol_engine.dir\\src\\engine\\physics.cpp.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\src -IE:\\cool\\projects2\\raylib\\OL\\build -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include /DWIN32 /D_WINDOWS /GR /EHsc /O2 /Ob2 /DNDEBUG -std:c++20 -MD /utf-8 /EHsc /FoCMakeFiles\\ol_engine.dir\\src\\engine\\player_controller.cpp.obj /FdCMakeFiles\\ol_engine.dir\\ol_engine.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\src\\engine\\player_controller.cpp",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\src\\engine\\player_controller.cpp",
+  "output": "CMakeFiles\\ol_engine.dir\\src\\engine\\player_controller.cpp.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\src -IE:\\cool\\projects2\\raylib\\OL\\build -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include /DWIN32 /D_WINDOWS /GR /EHsc /O2 /Ob2 /DNDEBUG -std:c++20 -MD /utf-8 /EHsc /FoCMakeFiles\\ol_engine.dir\\src\\engine\\render.cpp.obj /FdCMakeFiles\\ol_engine.dir\\ol_engine.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\src\\engine\\render.cpp",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\src\\engine\\render.cpp",
+  "output": "CMakeFiles\\ol_engine.dir\\src\\engine\\render.cpp.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\src -IE:\\cool\\projects2\\raylib\\OL\\build -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include /DWIN32 /D_WINDOWS /GR /EHsc /O2 /Ob2 /DNDEBUG -std:c++20 -MD /utf-8 /EHsc /FoCMakeFiles\\ol_engine.dir\\src\\engine\\net.cpp.obj /FdCMakeFiles\\ol_engine.dir\\ol_engine.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\src\\engine\\net.cpp",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\src\\engine\\net.cpp",
+  "output": "CMakeFiles\\ol_engine.dir\\src\\engine\\net.cpp.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\src -IE:\\cool\\projects2\\raylib\\OL\\build -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /FoCMakeFiles\\ol_engine.dir\\res_RuffCut_Regular_ttf.c.obj /FdCMakeFiles\\ol_engine.dir\\ol_engine.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\build\\res_RuffCut_Regular_ttf.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\build\\res_RuffCut_Regular_ttf.c",
+  "output": "CMakeFiles\\ol_engine.dir\\res_RuffCut_Regular_ttf.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\src -IE:\\cool\\projects2\\raylib\\OL\\build -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /FoCMakeFiles\\ol_engine.dir\\resources.c.obj /FdCMakeFiles\\ol_engine.dir\\ol_engine.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\build\\resources.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\build\\resources.c",
+  "output": "CMakeFiles\\ol_engine.dir\\resources.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\src -IE:\\cool\\projects2\\raylib\\OL\\build -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /FoCMakeFiles\\ol_engine.dir\\resource_tree.c.obj /FdCMakeFiles\\ol_engine.dir\\ol_engine.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\build\\resource_tree.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\build\\resource_tree.c",
+  "output": "CMakeFiles\\ol_engine.dir\\resource_tree.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\src -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include /DWIN32 /D_WINDOWS /GR /EHsc /O2 /Ob2 /DNDEBUG -std:c++20 -MD /utf-8 /EHsc /FoCMakeFiles\\ol.dir\\src\\demo\\menu.cpp.obj /FdCMakeFiles\\ol.dir\\ -c -- E:\\cool\\projects2\\raylib\\OL\\src\\demo\\menu.cpp",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\src\\demo\\menu.cpp",
+  "output": "CMakeFiles\\ol.dir\\src\\demo\\menu.cpp.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\src -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include /DWIN32 /D_WINDOWS /GR /EHsc /O2 /Ob2 /DNDEBUG -std:c++20 -MD /utf-8 /EHsc /FoCMakeFiles\\ol.dir\\src\\demo\\demo.cpp.obj /FdCMakeFiles\\ol.dir\\ -c -- E:\\cool\\projects2\\raylib\\OL\\src\\demo\\demo.cpp",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\src\\demo\\demo.cpp",
+  "output": "CMakeFiles\\ol.dir\\src\\demo\\demo.cpp.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\src -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include /DWIN32 /D_WINDOWS /GR /EHsc /O2 /Ob2 /DNDEBUG -std:c++20 -MD /utf-8 /EHsc /FoCMakeFiles\\ol.dir\\src\\demo\\main.cpp.obj /FdCMakeFiles\\ol.dir\\ -c -- E:\\cool\\projects2\\raylib\\OL\\src\\demo\\main.cpp",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\src\\demo\\main.cpp",
+  "output": "CMakeFiles\\ol.dir\\src\\demo\\main.cpp.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\src -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include /DWIN32 /D_WINDOWS /GR /EHsc /O2 /Ob2 /DNDEBUG -std:c++20 -MD /utf-8 /EHsc /FoCMakeFiles\\ol_tests.dir\\tests\\engine_tests.cpp.obj /FdCMakeFiles\\ol_tests.dir\\ -c -- E:\\cool\\projects2\\raylib\\OL\\tests\\engine_tests.cpp",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\tests\\engine_tests.cpp",
+  "output": "CMakeFiles\\ol_tests.dir\\tests\\engine_tests.cpp.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\src -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include /DWIN32 /D_WINDOWS /GR /EHsc /O2 /Ob2 /DNDEBUG -std:c++20 -MD /utf-8 /EHsc /FoCMakeFiles\\ol_tests.dir\\src\\demo\\menu.cpp.obj /FdCMakeFiles\\ol_tests.dir\\ -c -- E:\\cool\\projects2\\raylib\\OL\\src\\demo\\menu.cpp",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\src\\demo\\menu.cpp",
+  "output": "CMakeFiles\\ol_tests.dir\\src\\demo\\menu.cpp.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -imsvcE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /Foraylib\\raylib\\CMakeFiles\\raylib.dir\\rcore.c.obj /Fdraylib\\raylib\\CMakeFiles\\raylib.dir\\raylib.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\rcore.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\rcore.c",
+  "output": "raylib\\raylib\\CMakeFiles\\raylib.dir\\rcore.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -imsvcE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /Foraylib\\raylib\\CMakeFiles\\raylib.dir\\rmodels.c.obj /Fdraylib\\raylib\\CMakeFiles\\raylib.dir\\raylib.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\rmodels.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\rmodels.c",
+  "output": "raylib\\raylib\\CMakeFiles\\raylib.dir\\rmodels.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -imsvcE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /Foraylib\\raylib\\CMakeFiles\\raylib.dir\\rshapes.c.obj /Fdraylib\\raylib\\CMakeFiles\\raylib.dir\\raylib.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\rshapes.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\rshapes.c",
+  "output": "raylib\\raylib\\CMakeFiles\\raylib.dir\\rshapes.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -imsvcE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /Foraylib\\raylib\\CMakeFiles\\raylib.dir\\rtext.c.obj /Fdraylib\\raylib\\CMakeFiles\\raylib.dir\\raylib.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\rtext.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\rtext.c",
+  "output": "raylib\\raylib\\CMakeFiles\\raylib.dir\\rtext.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -imsvcE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /Foraylib\\raylib\\CMakeFiles\\raylib.dir\\rtextures.c.obj /Fdraylib\\raylib\\CMakeFiles\\raylib.dir\\raylib.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\rtextures.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\rtextures.c",
+  "output": "raylib\\raylib\\CMakeFiles\\raylib.dir\\rtextures.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -imsvcE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /Foraylib\\raylib\\CMakeFiles\\raylib.dir\\utils.c.obj /Fdraylib\\raylib\\CMakeFiles\\raylib.dir\\raylib.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\utils.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\utils.c",
+  "output": "raylib\\raylib\\CMakeFiles\\raylib.dir\\utils.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DGRAPHICS_API_OPENGL_33 -DPLATFORM_DESKTOP -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src -imsvcE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /Foraylib\\raylib\\CMakeFiles\\raylib.dir\\raudio.c.obj /Fdraylib\\raylib\\CMakeFiles\\raylib.dir\\raylib.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\raudio.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\raudio.c",
+  "output": "raylib\\raylib\\CMakeFiles\\raylib.dir\\raudio.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\context.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\context.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\context.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\context.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\init.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\init.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\init.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\init.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\input.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\input.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\input.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\input.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\monitor.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\monitor.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\monitor.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\monitor.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\platform.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\platform.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\platform.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\platform.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\vulkan.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\vulkan.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\vulkan.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\vulkan.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\window.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\window.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\window.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\window.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\egl_context.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\egl_context.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\egl_context.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\egl_context.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\osmesa_context.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\osmesa_context.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\osmesa_context.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\osmesa_context.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\null_init.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\null_init.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\null_init.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\null_init.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\null_monitor.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\null_monitor.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\null_monitor.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\null_monitor.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\null_window.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\null_window.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\null_window.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\null_window.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\null_joystick.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\null_joystick.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\null_joystick.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\null_joystick.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\win32_module.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\win32_module.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\win32_module.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\win32_module.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\win32_time.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\win32_time.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\win32_time.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\win32_time.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\win32_thread.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\win32_thread.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\win32_thread.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\win32_thread.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\win32_init.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\win32_init.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\win32_init.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\win32_init.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\win32_joystick.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\win32_joystick.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\win32_joystick.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\win32_joystick.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\win32_monitor.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\win32_monitor.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\win32_monitor.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\win32_monitor.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\win32_window.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\win32_window.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\win32_window.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\win32_window.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/OL/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\include -IE:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src -IE:\\cool\\projects2\\raylib\\OL\\build\\raylib\\raylib\\external\\glfw\\src -fno-strict-aliasing -Werror=implicit-function-declaration -Werror=pointer-arith /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /W3 /Foraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\wgl_context.c.obj /Fdraylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\glfw.pdb -c -- E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\wgl_context.c",
+  "file": "E:\\cool\\projects2\\raylib\\OL\\ref\\plato\\out\\build\\x64-Debug\\_deps\\raylib-src\\src\\external\\glfw\\src\\wgl_context.c",
+  "output": "raylib\\raylib\\external\\glfw\\src\\CMakeFiles\\glfw.dir\\wgl_context.c.obj"
+}
+]
