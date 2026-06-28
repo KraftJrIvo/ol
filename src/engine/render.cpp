@@ -32,7 +32,7 @@ void renderer_init(RenderState* renderer) {
         nullptr,
         0
     );
-    renderer->font_ready = IsFontReady(renderer->font);
+    renderer->font_ready = IsFontValid(renderer->font);
 }
 
 void renderer_shutdown(RenderState* renderer) {

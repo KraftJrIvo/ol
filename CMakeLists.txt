@@ -14,7 +14,7 @@ if (WIN32)
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 endif()
 
-set(RAYLIB_VERSION 5.5)
+set(RAYLIB_VERSION 6.0)
 set(OL_RAYLIB_SOURCE_DIR "" CACHE PATH "Optional local raylib source directory")
 option(OL_USE_STEAMWORKS "Build optional Steamworks networking path" OFF)
 set(STEAMWORKS_SDK_DIR "" CACHE PATH "Path to Steamworks SDK root")
