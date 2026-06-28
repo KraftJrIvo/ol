@@ -18,8 +18,8 @@ void demo_draw_menu_contents(const MenuScreen& menu) {
     menu_text(menu.renderer, "Session:", {46.0f, 188.0f}, 34.0f, GRAY);
     menu_text(menu.renderer, menu.session_name, {205.0f, 188.0f}, 34.0f, WHITE);
     DrawRectangle(48, 256, 42, 42, menu.player_color);
-    menu_text(menu.renderer, "C color   H host/offline start   J join from clipboard", {108.0f, 258.0f}, 26.0f, LIGHTGRAY);
-    menu_text(menu.renderer, "Backspace edits name", {108.0f, 296.0f}, 26.0f, LIGHTGRAY);
+    menu_text(menu.renderer, "C color   H host/start   J join clipboard", {108.0f, 258.0f}, 26.0f, LIGHTGRAY);
+    menu_text(menu.renderer, "Host copies lobby id; Backspace edits name", {108.0f, 296.0f}, 26.0f, LIGHTGRAY);
     menu_text(menu.renderer, menu.status, {48.0f, 368.0f}, 24.0f, {170, 190, 210, 255});
 }
 

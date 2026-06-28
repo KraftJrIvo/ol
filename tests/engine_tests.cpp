@@ -1354,6 +1354,7 @@ bool run_visual_test() {
     light.radius = 10.0f;
     light.intensity = 1.1f;
     ol::dimension_add_light(dim, light);
+    ol::dimension_add_player(dim, "remote", {240, 70, 90, 255}, test_pos(dim_id, {1.6f, 0.0f, 2.8f}, dim->chunk_size_m), false);
 
     ol::CameraView view{};
     view.anchor = test_pos(dim_id, {0.0f, 0.0f, 6.5f}, dim->chunk_size_m);
@@ -1373,10 +1374,12 @@ bool run_visual_test() {
     Color* pixels = LoadImageColors(img);
     int non_sky = 0;
     int dark = 0;
+    int player_pixels = 0;
     for (int i = 0; i < img.width * img.height; ++i) {
         const Color c = pixels[i];
         if (!(c.r > 80 && c.r < 230 && c.g > 120 && c.g < 245 && c.b > 150 && c.b < 255)) non_sky++;
         if (c.r < 35 && c.g < 35 && c.b < 35) dark++;
+        if (c.r > 190 && c.g > 35 && c.g < 130 && c.b > 45 && c.b < 150) player_pixels++;
     }
     UnloadImageColors(pixels);
     UnloadImage(img);
@@ -1385,7 +1388,8 @@ bool run_visual_test() {
 
     const bool ok = expect_true(exported, "Visual smoke image exported") &&
                     expect_true(non_sky > 2000, "Visual smoke image contains scene pixels") &&
-                    expect_true(dark > 20, "Visual smoke image contains solid dark edge pixels");
+                    expect_true(dark > 20, "Visual smoke image contains solid dark edge pixels") &&
+                    expect_true(player_pixels > 50, "Visual smoke image contains a rendered remote player");
     if (ok) std::printf("visual test passed: %s\n", out_path);
     return ok;
 }

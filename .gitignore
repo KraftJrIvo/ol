@@ -2,4 +2,6 @@
 .vscode
 .agents
 build
+build-*
+test-output
 ref

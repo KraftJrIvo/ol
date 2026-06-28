@@ -218,7 +218,22 @@ static void draw_sprites(RenderState* renderer, Dimension* dim, const CameraView
     }
 }
 
-static void draw_physics(RenderState* renderer, Dimension* dim, const CameraView& view, u32 local_player_id) {
+static void draw_players(Dimension* dim, const CameraView& view, u32 local_player_id) {
+    for (u32 slot = 0; slot < dim->players.count; ++slot) {
+        const u32 player_id = arena_id_at_slot(&dim->players, slot);
+        const PlayerEntity* player = &dim->players.data[slot];
+        if (player_id == local_player_id || !player->connected) continue;
+        const PointMass* bottom = arena_get(&dim->physics.masses, player->bottom_mass);
+        const PointMass* top = arena_get(&dim->physics.masses, player->top_mass);
+        if (!bottom || !top) continue;
+        const Vector3 a = world_delta_meters(bottom->pos, view.anchor, dim->chunk_size_m);
+        const Vector3 b = world_delta_meters(top->pos, view.anchor, dim->chunk_size_m);
+        DrawCylinderEx(a, b, bottom->radius, top->radius, 16, player->color);
+        DrawCylinderWiresEx(a, b, bottom->radius, top->radius, 16, BLACK);
+    }
+}
+
+static void draw_physics(RenderState* renderer, Dimension* dim, const CameraView& view) {
     if (!renderer->draw_physics_debug) return;
 
     for (u32 slot = 0; slot < dim->physics.boxes.count; ++slot) {
@@ -228,19 +243,6 @@ static void draw_physics(RenderState* renderer, Dimension* dim, const CameraView
         c.a = 80;
         DrawCubeV(rel, box->half * 2.0f, c);
         DrawCubeWiresV(rel, box->half * 2.0f, Fade(BLACK, 0.45f));
-    }
-
-    for (u32 slot = 0; slot < dim->players.count; ++slot) {
-        const u32 player_id = arena_id_at_slot(&dim->players, slot);
-        const PlayerEntity* player = &dim->players.data[slot];
-        if (player_id == local_player_id) continue;
-        const PointMass* bottom = arena_get(&dim->physics.masses, player->bottom_mass);
-        const PointMass* top = arena_get(&dim->physics.masses, player->top_mass);
-        if (!bottom || !top) continue;
-        const Vector3 a = world_delta_meters(bottom->pos, view.anchor, dim->chunk_size_m);
-        const Vector3 b = world_delta_meters(top->pos, view.anchor, dim->chunk_size_m);
-        DrawCylinderEx(a, b, bottom->radius, top->radius, 16, player->color);
-        DrawCylinderWiresEx(a, b, bottom->radius, top->radius, 16, BLACK);
     }
 
     for (u32 slot = 0; slot < dim->lights.count; ++slot) {
@@ -277,7 +279,8 @@ void renderer_draw_dimension(RenderState* renderer, Dimension* dim, const Camera
         draw_sprites(renderer, dim, view, chunk);
     }
 
-    draw_physics(renderer, dim, view, local_player_id);
+    draw_players(dim, view, local_player_id);
+    draw_physics(renderer, dim, view);
 
     EndMode3D();
 

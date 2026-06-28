@@ -2,6 +2,7 @@
 #include "demo/menu.h"
 
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 
@@ -17,6 +18,34 @@ static void add_text_char(char* text, size_t cap, int c) {
 
 static WorldPos demo_pos(u32 dimension, Vector3 meters, float chunk_size) {
     return make_world_pos(dimension, meters, chunk_size);
+}
+
+static void reset_remote_players(DemoApp* app) {
+    app->remote_peer_ids.fill(0);
+    app->remote_player_ids.fill(invalid_id);
+}
+
+static void write_smoke_log(const char* fmt, ...) {
+    char message[256]{};
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(message, sizeof(message), fmt, args);
+    va_end(args);
+
+    std::printf("%s\n", message);
+    std::fflush(stdout);
+
+    if (std::FILE* file = std::fopen("steam-smoke.log", "w")) {
+        std::fprintf(file, "%s\n", message);
+        std::fclose(file);
+    }
+}
+
+static void write_smoke_lobby_file(u64 lobby_id) {
+    if (std::FILE* file = std::fopen("steam-smoke-lobby.txt", "w")) {
+        std::fprintf(file, "%llu\n", static_cast<unsigned long long>(lobby_id));
+        std::fclose(file);
+    }
 }
 
 static u32 add_visual_box(Dimension* dim, u32 dimension_id, u32 cube_geom, const char* name, Vector3 center, Vector3 size, Color color) {
@@ -47,6 +76,7 @@ static void add_static_box(Dimension* dim, u32 dimension_id, u32 cube_geom, cons
 
 static void generate_demo_world(DemoApp* app) {
     world_init(&app->world);
+    reset_remote_players(app);
     app->dimension_id = world_add_dimension(&app->world, "default", 16.0f, 64.0f);
     Dimension* dim = world_get_dimension(&app->world, app->dimension_id);
     dim->render_radius_chunks = 7;
@@ -169,16 +199,26 @@ void demo_draw_menu(DemoApp* app) {
 }
 
 static void update_menu(DemoApp* app) {
+    const bool color_pressed = IsKeyPressed(KEY_C);
+    const bool host_pressed = IsKeyPressed(KEY_H);
+    const bool join_pressed = IsKeyPressed(KEY_J);
+
     int c = GetCharPressed();
     while (c) {
-        add_text_char(app->player_name, sizeof(app->player_name), c);
+        const bool shortcut_char =
+            (color_pressed && (c == 'c' || c == 'C')) ||
+            (host_pressed && (c == 'h' || c == 'H')) ||
+            (join_pressed && (c == 'j' || c == 'J'));
+        if (!shortcut_char) {
+            add_text_char(app->player_name, sizeof(app->player_name), c);
+        }
         c = GetCharPressed();
     }
     if (IsKeyPressed(KEY_BACKSPACE)) {
         const size_t len = std::strlen(app->player_name);
         if (len > 0) app->player_name[len - 1] = 0;
     }
-    if (IsKeyPressed(KEY_C)) {
+    if (color_pressed) {
         static const Color colors[] = {
             {90, 180, 255, 255}, {255, 120, 110, 255}, {120, 220, 150, 255},
             {255, 214, 100, 255}, {205, 145, 255, 255}
@@ -187,14 +227,14 @@ static void update_menu(DemoApp* app) {
         color_idx = (color_idx + 1) % (sizeof(colors) / sizeof(colors[0]));
         app->player_color = colors[color_idx];
     }
-    if (IsKeyPressed(KEY_H)) {
+    if (host_pressed) {
         net_host(&app->net, app->session_name);
         generate_demo_world(app);
         app->in_game = true;
         app->mouse_captured = true;
         DisableCursor();
     }
-    if (IsKeyPressed(KEY_J)) {
+    if (join_pressed) {
         net_join_from_clipboard(&app->net);
         generate_demo_world(app);
         app->in_game = true;
@@ -253,6 +293,104 @@ static void fixed_update(DemoApp* app, Dimension* dim, float dt) {
     app->input.jump_pressed = false;
 }
 
+static NetPlayerState make_net_player_state(DemoApp* app, Dimension* dim, const PlayerEntity* player) {
+    NetPlayerState state{};
+    if (!dim || !player) return state;
+
+    const WorldPos feet = player_feet_pos(dim, player);
+    state.peer_id = app->net.local_peer_id;
+    state.player_id = app->local_player_id;
+    state.dimension_id = feet.dimension;
+    state.chunk = feet.chunk;
+    state.local = feet.local;
+    state.yaw = player->yaw;
+    state.pitch = player->pitch;
+    state.color = player->color;
+    std::snprintf(state.name, sizeof(state.name), "%s", player->name);
+    return state;
+}
+
+static u32 find_remote_slot(DemoApp* app, u64 peer_id) {
+    for (u32 i = 0; i < max_players; ++i) {
+        if (app->remote_peer_ids[i] == peer_id) return i;
+    }
+    return invalid_id;
+}
+
+static u32 acquire_remote_slot(DemoApp* app, u64 peer_id) {
+    const u32 existing = find_remote_slot(app, peer_id);
+    if (id_valid(existing)) return existing;
+
+    for (u32 i = 0; i < max_players; ++i) {
+        if (app->remote_peer_ids[i] == 0) {
+            app->remote_peer_ids[i] = peer_id;
+            app->remote_player_ids[i] = invalid_id;
+            return i;
+        }
+    }
+    return invalid_id;
+}
+
+static bool net_peer_present(const NetSession* net, u64 peer_id) {
+    for (u32 i = 0; i < net->peer_count; ++i) {
+        if (net->peer_ids[i] == peer_id) return true;
+    }
+    return false;
+}
+
+static void remove_remote_player(Dimension* dim, u32 player_id) {
+    PlayerEntity* player = arena_get(&dim->players, player_id);
+    if (!player) return;
+    arena_remove(&dim->physics.masses, player->bottom_mass);
+    arena_remove(&dim->physics.masses, player->top_mass);
+    arena_remove(&dim->physics.links, player->body_link);
+    arena_remove(&dim->players, player_id);
+}
+
+static void sync_remote_players(DemoApp* app, Dimension* dim) {
+    if (!dim) return;
+
+    for (u32 slot = 0; slot < max_players; ++slot) {
+        const u64 peer_id = app->remote_peer_ids[slot];
+        if (!peer_id || net_peer_present(&app->net, peer_id)) continue;
+        if (id_valid(app->remote_player_ids[slot])) {
+            remove_remote_player(dim, app->remote_player_ids[slot]);
+        }
+        app->remote_peer_ids[slot] = 0;
+        app->remote_player_ids[slot] = invalid_id;
+    }
+
+    for (u32 net_idx = 0; net_idx < app->net.peer_count; ++net_idx) {
+        if (!app->net.remote_player_valid[net_idx]) continue;
+        const NetPlayerState& state = app->net.remote_players[net_idx];
+        if (!state.peer_id || state.peer_id == app->net.local_peer_id) continue;
+
+        const u32 slot = acquire_remote_slot(app, state.peer_id);
+        if (!id_valid(slot)) continue;
+
+        WorldPos feet{};
+        feet.dimension = app->dimension_id;
+        feet.chunk = state.chunk;
+        feet.local = state.local;
+        canonicalize(&feet, dim->chunk_size_m);
+
+        if (!id_valid(app->remote_player_ids[slot])) {
+            const char* name = state.name[0] ? state.name : "peer";
+            app->remote_player_ids[slot] = dimension_add_player(dim, name, state.color, feet, false);
+        }
+
+        PlayerEntity* remote = arena_get(&dim->players, app->remote_player_ids[slot]);
+        if (!remote) continue;
+        std::snprintf(remote->name, sizeof(remote->name), "%s", state.name[0] ? state.name : "peer");
+        remote->color = state.color;
+        remote->yaw = state.yaw;
+        remote->pitch = state.pitch;
+        remote->connected = true;
+        remote->local = false;
+        player_sync_masses_to_pose(dim, remote, feet);
+    }
+}
+
 static void update_game(DemoApp* app) {
     Dimension* dim = world_get_dimension(&app->world, app->dimension_id);
     PlayerEntity* player = local_player(app, dim);
@@ -261,9 +399,9 @@ static void update_game(DemoApp* app) {
     if (IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD)) renderer_change_scale(&app->renderer, 1);
     if (IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_KP_SUBTRACT)) renderer_change_scale(&app->renderer, -1);
     if (IsKeyPressed(KEY_F3)) app->renderer.draw_physics_debug = !app->renderer.draw_physics_debug;
+    if (IsKeyPressed(KEY_C) && app->net.in_lobby) net_copy_lobby_to_clipboard(&app->net);
 
     collect_input(app, player);
-    net_update(&app->net);
 
     app->fixed_accum += fminf(GetFrameTime(), 0.1f);
     constexpr float fixed_dt = 1.0f / 60.0f;
@@ -271,6 +409,10 @@ static void update_game(DemoApp* app) {
         fixed_update(app, dim, fixed_dt);
         app->fixed_accum -= fixed_dt;
     }
+
+    net_set_local_player(&app->net, make_net_player_state(app, dim, player));
+    net_update(&app->net);
+    sync_remote_players(app, dim);
 
     CameraView view{};
     view.anchor = player_feet_pos(dim, player);
@@ -290,6 +432,84 @@ bool demo_update_and_draw(DemoApp* app) {
         update_game(app);
     }
     return true;
+}
+
+int demo_run_steam_host_smoke(double timeout_s, double hold_s) {
+    write_smoke_log("STEAM_HOST_START timeout=%.2f hold=%.2f", timeout_s, hold_s);
+    SetTraceLogLevel(LOG_WARNING);
+    SetConfigFlags(FLAG_WINDOW_HIDDEN);
+
+    auto* app = new DemoApp();
+    demo_init(app);
+    net_host(&app->net, app->session_name);
+    generate_demo_world(app);
+
+    const double start = GetTime();
+    while (GetTime() - start < timeout_s) {
+        Dimension* dim = world_get_dimension(&app->world, app->dimension_id);
+        PlayerEntity* player = dim ? local_player(app, dim) : nullptr;
+        if (dim && player) {
+            net_set_local_player(&app->net, make_net_player_state(app, dim, player));
+        }
+        net_update(&app->net);
+        if (app->net.in_lobby && app->net.lobby_id) {
+            write_smoke_lobby_file(app->net.lobby_id);
+            write_smoke_log("STEAM_HOST_OK lobby=%llu status=\"%s\"",
+                static_cast<unsigned long long>(app->net.lobby_id),
+                app->net.status);
+            const double hold_start = GetTime();
+            while (GetTime() - hold_start < hold_s) {
+                net_update(&app->net);
+                WaitTime(0.05);
+            }
+            demo_shutdown(app);
+            delete app;
+            return 0;
+        }
+        WaitTime(0.05);
+    }
+
+    write_smoke_log("STEAM_HOST_FAIL status=\"%s\"", app->net.status);
+    demo_shutdown(app);
+    delete app;
+    return 1;
+}
+
+int demo_run_steam_join_smoke(const char* lobby_id, double timeout_s) {
+    write_smoke_log("STEAM_JOIN_START lobby=%s timeout=%.2f", lobby_id ? lobby_id : "", timeout_s);
+    SetTraceLogLevel(LOG_WARNING);
+    SetConfigFlags(FLAG_WINDOW_HIDDEN);
+
+    auto* app = new DemoApp();
+    demo_init(app);
+    SetClipboardText(lobby_id ? lobby_id : "");
+    net_join_from_clipboard(&app->net);
+    generate_demo_world(app);
+
+    const double start = GetTime();
+    while (GetTime() - start < timeout_s) {
+        Dimension* dim = world_get_dimension(&app->world, app->dimension_id);
+        PlayerEntity* player = dim ? local_player(app, dim) : nullptr;
+        if (dim && player) {
+            net_set_local_player(&app->net, make_net_player_state(app, dim, player));
+        }
+        net_update(&app->net);
+        if (app->net.in_lobby && app->net.lobby_id) {
+            write_smoke_log("STEAM_JOIN_OK lobby=%llu status=\"%s\" peers=%u",
+                static_cast<unsigned long long>(app->net.lobby_id),
+                app->net.status,
+                static_cast<unsigned>(app->net.peer_count));
+            demo_shutdown(app);
+            delete app;
+            return 0;
+        }
+        WaitTime(0.05);
+    }
+
+    write_smoke_log("STEAM_JOIN_FAIL status=\"%s\"", app->net.status);
+    demo_shutdown(app);
+    delete app;
+    return 1;
 }
 
 } // namespace ol
