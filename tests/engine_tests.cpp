@@ -144,6 +144,33 @@ ol::u32 add_test_ramp_box(ol::Dimension* dim, ol::u32 dim_id, Vector3 low_center
     return ol::physics_add_box(&dim->physics, box);
 }
 
+ol::u32 add_demo_ramp_collider(ol::Dimension* dim, ol::u32 dim_id) {
+    ol::BoxCollider box{};
+    box.pos = test_pos(dim_id, {7.0f, 0.363f, 6.024f}, dim->chunk_size_m);
+    box.half = {2.5f, 0.12f, 2.55f};
+    box.axis_aligned = false;
+    box.rotation = QuaternionFromAxisAngle({1.0f, 0.0f, 0.0f}, -std::atan2(1.05f, 5.0f));
+    return ol::physics_add_box(&dim->physics, box);
+}
+
+bool ramp_surface_y_at(ol::Dimension* dim, ol::u32 dim_id, ol::u32 box_id, Vector3 feet, float radius, float* out_y) {
+    const ol::BoxCollider* box = ol::arena_get(&dim->physics.boxes, box_id);
+    if (!box) return false;
+    const Vector3 normal = ol::safe_norm(Vector3RotateByQuaternion({0.0f, 1.0f, 0.0f}, box->rotation), {0.0f, 1.0f, 0.0f});
+    const ol::WorldPos feet_pos = test_pos(dim_id, feet, dim->chunk_size_m);
+    const Vector3 rel = ol::world_delta_meters(feet_pos, box->pos, dim->chunk_size_m);
+    const Vector3 plane_point = Vector3RotateByQuaternion({0.0f, box->half.y, 0.0f}, box->rotation);
+    const float plane_d = Vector3DotProduct(normal, plane_point);
+    const float rel_y = (plane_d - normal.x * rel.x - normal.z * rel.z) / normal.y;
+    const Vector3 on_plane = {rel.x, rel_y, rel.z};
+    const Vector3 local = Vector3RotateByQuaternion(on_plane, QuaternionInvert(box->rotation));
+    if (std::fabs(local.x) > box->half.x + radius) return false;
+    if (std::fabs(local.z) > box->half.z + radius) return false;
+
+    *out_y = static_cast<float>(ol::world_axis_meters(box->pos.chunk.y, box->pos.local.y, dim->chunk_size_m) + rel_y);
+    return true;
+}
+
 float feet_y(ol::Dimension* dim, const ol::PlayerEntity* player) {
     return static_cast<float>(ol::world_axis_meters(
         ol::player_feet_pos(dim, player).chunk.y,
@@ -1262,6 +1289,56 @@ bool test_player_rotated_box_ramp_transition() {
     return ok;
 }
 
+bool test_player_sprint_jump_from_demo_stairs_to_ramp_does_not_fall_through() {
+    auto world = std::make_unique<ol::World>();
+    ol::world_init(world.get());
+    const ol::u32 dim_id = ol::world_add_dimension(world.get(), "demo_stair_ramp_jump", 16.0f, 64.0f);
+    ol::Dimension* dim = ol::world_get_dimension(world.get(), dim_id);
+    add_test_box(dim, dim_id, {0.0f, -0.55f, 0.0f}, {40.0f, 1.0f, 40.0f});
+    add_test_box(dim, dim_id, {-8.0f, 0.0f, 5.0f}, {3.0f, 1.0f, 3.0f});
+    add_test_box(dim, dim_id, {-8.0f, 0.5f, 8.0f}, {3.0f, 2.0f, 3.0f});
+    add_test_box(dim, dim_id, {-8.0f, 1.0f, 11.0f}, {3.0f, 3.0f, 3.0f});
+    const ol::u32 ramp_id = add_demo_ramp_collider(dim, dim_id);
+    add_test_box(dim, dim_id, {7.0f, 0.5f, 10.6f}, {5.0f, 1.0f, 4.0f});
+
+    const ol::u32 player_id = ol::dimension_add_player(dim, "tester", WHITE, test_pos(dim_id, {-8.0f, 2.5f, 11.0f}, dim->chunk_size_m), true);
+    ol::PlayerEntity* player = ol::arena_get(&dim->players, player_id);
+
+    const Vector3 target = {7.0f, 0.0f, 6.0f};
+    const Vector3 start = {-8.0f, 0.0f, 11.0f};
+    const Vector3 to_target = ol::safe_norm(target - start, {0.0f, 0.0f, -1.0f});
+    player->yaw = std::atan2(to_target.x, -to_target.z);
+
+    ol::PlayerControllerInput input{};
+    input.move = {0.0f, 1.0f};
+    input.sprint = true;
+
+    float min_clearance_on_ramp = 1000.0f;
+    bool reached_ramp_footprint = false;
+    bool low_inside_ramp = false;
+    for (int i = 0; i < 180; ++i) {
+        input.jump_pressed = i == 0;
+        input.jump_held = i < 12;
+        ol::player_controller_step(dim, player, input, 1.0f / 60.0f);
+
+        const float x = feet_x(dim, player);
+        const float y = feet_y(dim, player);
+        const float z = feet_z(dim, player);
+        float surface_y = 0.0f;
+        if (ramp_surface_y_at(dim, dim_id, ramp_id, {x, y, z}, player->body_radius - 0.04f, &surface_y)) {
+            reached_ramp_footprint = true;
+            const float clearance = y - surface_y;
+            min_clearance_on_ramp = fminf(min_clearance_on_ramp, clearance);
+            if (clearance < -0.08f) low_inside_ramp = true;
+        }
+    }
+
+    bool ok = expect_true(reached_ramp_footprint, "Sprint jump from demo stairs reaches the ramp footprint");
+    ok = expect_true(!low_inside_ramp, "Sprint jump from demo stairs does not fall through the ramp body") && ok;
+    ok = expect_true(min_clearance_on_ramp > -0.08f, "Sprint jump from demo stairs stays on or above the ramp surface") && ok;
+    return ok;
+}
+
 bool run_physics_tests() {
     bool ok = true;
     auto run = [&](const char* name, bool (*fn)()) {
@@ -1310,6 +1387,7 @@ bool run_physics_tests() {
     run("player_yaw_slide_tunnel_entrance_to_flush_support", test_player_yaw_slide_tunnel_entrance_to_flush_support);
     run("player_uncrouches_on_tunnel_roof", test_player_uncrouches_on_tunnel_roof);
     run("player_rotated_box_ramp_transition", test_player_rotated_box_ramp_transition);
+    run("player_sprint_jump_from_demo_stairs_to_ramp_does_not_fall_through", test_player_sprint_jump_from_demo_stairs_to_ramp_does_not_fall_through);
     if (ok) std::printf("physics tests passed\n");
     return ok;
 }

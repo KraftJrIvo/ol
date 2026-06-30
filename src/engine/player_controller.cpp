@@ -227,6 +227,23 @@ static void resolve_vertical(Dimension* dim, PlayerEntity* player, WorldPos prev
     player->on_ground = false;
     for (u32 i = 0; i < dim->physics.boxes.count; ++i) {
         const BoxCollider* box = &dim->physics.boxes.data[i];
+
+        if (*vertical_velocity <= 0.0f) {
+            double surface_y = 0.0;
+            if (box_top_surface_y(dim, player, i, *feet, player->body_radius, &surface_y)) {
+                const double prev_y = world_y_meters(previous_feet, dim->chunk_size_m);
+                const double feet_y = world_y_meters(*feet, dim->chunk_size_m);
+                const bool crossed_from_above = prev_y >= surface_y - 0.02 && feet_y <= surface_y + 0.05;
+                const bool shallow_top_penetration = feet_y > surface_y - 0.20 && feet_y <= surface_y + 0.05;
+                if (crossed_from_above || shallow_top_penetration) {
+                    worldpos_add_delta(feet, {0.0f, static_cast<float>(surface_y - feet_y), 0.0f}, dim->chunk_size_m);
+                    *vertical_velocity = 0.0f;
+                    player->on_ground = true;
+                    continue;
+                }
+            }
+        }
+
         if (!box->axis_aligned) continue;
         Vector3 rel = world_delta_meters(*feet, box->pos, dim->chunk_size_m);
         Vector3 prev_rel = world_delta_meters(previous_feet, box->pos, dim->chunk_size_m);
@@ -261,6 +278,30 @@ static void resolve_vertical(Dimension* dim, PlayerEntity* player, WorldPos prev
 static bool has_ground_below(const Dimension* dim, const PlayerEntity* player, WorldPos feet) {
     double surface_y = 0.0;
     return find_walkable_surface(dim, player, feet, 0.04f, 0.08f, &surface_y, nullptr);
+}
+
+static bool resolve_walkable_landing_crossing(Dimension* dim, PlayerEntity* player, WorldPos previous_feet, WorldPos* feet, float* vertical_velocity) {
+    if (*vertical_velocity > 0.0f) return false;
+
+    const double prev_y = world_y_meters(previous_feet, dim->chunk_size_m);
+    const double feet_y = world_y_meters(*feet, dim->chunk_size_m);
+    bool landed = false;
+    double best_y = -1.0e30;
+    for (u32 i = 0; i < dim->physics.boxes.count; ++i) {
+        double surface_y = 0.0;
+        if (!box_top_surface_y(dim, player, i, *feet, player->body_radius, &surface_y)) continue;
+        const bool crossed_from_above = prev_y >= surface_y - 0.02 && feet_y <= surface_y + 0.05;
+        const bool shallow_top_penetration = feet_y > surface_y - 0.20 && feet_y <= surface_y + 0.05;
+        if ((!crossed_from_above && !shallow_top_penetration) || surface_y <= best_y) continue;
+        best_y = surface_y;
+        landed = true;
+    }
+
+    if (!landed) return false;
+    worldpos_add_delta(feet, {0.0f, static_cast<float>(best_y - feet_y), 0.0f}, dim->chunk_size_m);
+    *vertical_velocity = 0.0f;
+    player->on_ground = true;
+    return true;
 }
 
 static double box_axis_center(const BoxCollider* box, float chunk_size, bool x_axis) {
@@ -346,6 +387,39 @@ static bool resolve_rotated_box_x_side(Dimension* dim, PlayerEntity* player, con
     worldpos_add_delta(feet, world_delta, dim->chunk_size_m);
     *velocity_axis = 0.0f;
     return true;
+}
+
+static bool resolve_rotated_box_side_penetration(Dimension* dim, PlayerEntity* player, const BoxCollider* box, WorldPos* feet, bool allow_step) {
+    if (box->axis_aligned) return false;
+
+    const u32 box_slot = static_cast<u32>(box - dim->physics.boxes.data.data());
+    double surface_y = 0.0;
+    if (!box_top_surface_y(dim, player, box_slot, *feet, player->body_radius, &surface_y)) return false;
+
+    const double feet_y = world_y_meters(*feet, dim->chunk_size_m);
+    const double step_delta = surface_y - feet_y;
+    if (allow_step && step_delta >= -0.06 && step_delta <= static_cast<double>(player_step_up_m)) return false;
+    if (step_delta <= static_cast<double>(player_step_up_m)) return false;
+    if (feet_y + player->current_height < surface_y - 0.25) return false;
+
+    const Quaternion inv = QuaternionInvert(box->rotation);
+    const Vector3 rel = world_delta_meters(*feet, box->pos, dim->chunk_size_m);
+    const Vector3 local = Vector3RotateByQuaternion(rel, inv);
+    if (std::fabs(local.z) > box->half.z + player->body_radius) return false;
+
+    const float expanded = box->half.x + player->body_radius;
+    if (std::fabs(local.x) > expanded) return false;
+
+    const float correction = local.x < 0.0f ? -expanded - local.x : expanded - local.x;
+    const Vector3 world_delta = Vector3RotateByQuaternion({correction, 0.0f, 0.0f}, box->rotation);
+    worldpos_add_delta(feet, world_delta, dim->chunk_size_m);
+    return true;
+}
+
+static void resolve_rotated_box_side_penetrations(Dimension* dim, PlayerEntity* player, WorldPos* feet, bool allow_step) {
+    for (u32 i = 0; i < dim->physics.boxes.count; ++i) {
+        resolve_rotated_box_side_penetration(dim, player, &dim->physics.boxes.data[i], feet, allow_step);
+    }
 }
 
 static void resolve_axis(Dimension* dim, PlayerEntity* player, WorldPos previous_feet, WorldPos* feet, float* velocity_axis, bool x_axis, bool allow_step) {
@@ -534,6 +608,7 @@ void player_controller_step(Dimension* dim, PlayerEntity* player, const PlayerCo
     player->velocity.y += dim->physics.gravity.y * dt;
     if (player->velocity.y < -30.0f) player->velocity.y = -30.0f;
 
+    const WorldPos frame_start_feet = feet;
     WorldPos previous_feet = feet;
     worldpos_add_delta(&feet, {0.0f, player->velocity.y * dt, 0.0f}, dim->chunk_size_m);
     resolve_vertical(dim, player, previous_feet, &feet, &player->velocity.y);
@@ -547,6 +622,10 @@ void player_controller_step(Dimension* dim, PlayerEntity* player, const PlayerCo
     worldpos_add_delta(&feet, {0.0f, 0.0f, player->velocity.z * dt}, dim->chunk_size_m);
     resolve_axis(dim, player, previous_feet, &feet, &player->velocity.z, false, grounded_before);
     resolve_box_corners(dim, player, &feet, grounded_before);
+    resolve_rotated_box_side_penetrations(dim, player, &feet, grounded_before);
+    if (!player->on_ground) {
+        resolve_walkable_landing_crossing(dim, player, frame_start_feet, &feet, &player->velocity.y);
+    }
     if (player->velocity.y <= 0.0f && grounded_before) {
         snap_to_walkable_ground(dim, player, &feet, &player->velocity.y, 0.35f, 0.18f);
     }
