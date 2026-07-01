@@ -31,19 +31,30 @@ when streaming/editing grows.
 
 ## Mesh Edges
 
-The current renderer draws mesh faces in 3D and draws edges with `DrawLine3D`. That
-is acceptable for the first demo, but it is not the final pixel-perfect contour
-path.
+The renderer draws mesh faces in 3D, queues explicit mesh edges, clips each edge
+against the camera near plane and native render target, then cuts the projected
+edge centerline against the rendered scene geometry. The surviving intervals are
+drawn with normal 2D line calls, so the final stroke shape stays pixel-perfect while
+closer physical surfaces still hide covered edge spans.
 
-The intended edge pipeline is:
+The current edge pipeline is:
 
-1. Render normal geometry into color and a readable depth texture.
-2. Project each mesh edge into screen space.
-3. Draw screen-space line strips in a shader.
-4. Compare each line fragment against the depth texture and discard fragments behind
-   closer geometry, with a small bias to prevent self-fighting.
+1. Render normal geometry into color and depth.
+2. Collect the camera-relative triangles for the rendered meshes and remote-player
+   hitbox cylinders.
+3. Project each queued edge into screen space.
+4. Clip against the near plane and screen bounds.
+5. Sample along each projected centerline. Each sample casts a visibility ray from
+   the camera to the edge point and is hidden when an earlier scene triangle blocks
+   that ray. The depth buffer remains a fallback for edge sources that do not have
+   scene triangles.
+6. Split at visibility changes, refine the transition points, and draw the remaining
+   intervals as native-pixel 2D lines.
 
-This avoids CPU depth readback and gives stable pixel-width contours.
+This gives stable pixel-width contours while avoiding 3D line-strip artifacts.
+Contour selection is still explicit authoring data; the demo hand-authors combined
+contours for multi-box stairs and the tunnel instead of deriving arbitrary merged
+object outlines.
 
 ## Physics Broadphase
 

@@ -1,15 +1,32 @@
 #include "engine/render.h"
 #include "engine/player_controller.h"
 #include "engine/world.h"
+#include "demo/demo.h"
 #include "demo/menu.h"
 
 #include "raylib.h"
+#include "rlgl.h"
+
+#if defined(_WIN32)
+    #if !defined(APIENTRY)
+        #define APIENTRY __stdcall
+    #endif
+    #if !defined(WINGDIAPI)
+        #define WINGDIAPI __declspec(dllimport)
+    #endif
+#endif
+#if defined(__APPLE__)
+#include <OpenGL/gl.h>
+#else
+#include <GL/gl.h>
+#endif
 
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <vector>
 
 namespace {
 
@@ -1452,12 +1469,16 @@ bool run_visual_test() {
     Color* pixels = LoadImageColors(img);
     int non_sky = 0;
     int dark = 0;
+    int box_edge_pixels = 0;
     int player_pixels = 0;
-    for (int i = 0; i < img.width * img.height; ++i) {
-        const Color c = pixels[i];
-        if (!(c.r > 80 && c.r < 230 && c.g > 120 && c.g < 245 && c.b > 150 && c.b < 255)) non_sky++;
-        if (c.r < 35 && c.g < 35 && c.b < 35) dark++;
-        if (c.r > 190 && c.g > 35 && c.g < 130 && c.b > 45 && c.b < 150) player_pixels++;
+    for (int y = 0; y < img.height; ++y) {
+        for (int x = 0; x < img.width; ++x) {
+            const Color c = pixels[y * img.width + x];
+            if (!(c.r > 80 && c.r < 230 && c.g > 120 && c.g < 245 && c.b > 150 && c.b < 255)) non_sky++;
+            if (c.r < 35 && c.g < 35 && c.b < 35) dark++;
+            if (x >= 240 && x <= 390 && y >= 180 && y <= 330 && c.r < 35 && c.g < 35 && c.b < 35) box_edge_pixels++;
+            if (c.r > 190 && c.g > 35 && c.g < 130 && c.b > 45 && c.b < 150) player_pixels++;
+        }
     }
     UnloadImageColors(pixels);
     UnloadImage(img);
@@ -1467,8 +1488,331 @@ bool run_visual_test() {
     const bool ok = expect_true(exported, "Visual smoke image exported") &&
                     expect_true(non_sky > 2000, "Visual smoke image contains scene pixels") &&
                     expect_true(dark > 20, "Visual smoke image contains solid dark edge pixels") &&
+                    expect_true(box_edge_pixels > 20, "Visual smoke image contains box contour edge pixels") &&
                     expect_true(player_pixels > 50, "Visual smoke image contains a rendered remote player");
     if (ok) std::printf("visual test passed: %s\n", out_path);
+    return ok;
+}
+
+struct EdgeCompareView {
+    const char* name = "";
+    Vector3 eye = {0.0f, 0.0f, 0.0f};
+    Vector3 target = {0.0f, 0.0f, 0.0f};
+};
+
+ol::CameraView make_edge_compare_camera(ol::u32 dim_id, const ol::Dimension* dim, const EdgeCompareView& src) {
+    ol::CameraView view{};
+    view.anchor = test_pos(dim_id, {src.eye.x, 0.0f, src.eye.z}, dim->chunk_size_m);
+    view.eye_height = src.eye.y;
+    const Vector3 to_target = src.target - src.eye;
+    const float len = ol::safe_len(to_target);
+    const Vector3 dir = len > 0.001f ? to_target / len : Vector3{0.0f, 0.0f, -1.0f};
+    view.yaw = std::atan2(dir.x, -dir.z);
+    view.pitch = std::asin(ol::clampf(dir.y, -1.0f, 1.0f));
+    return view;
+}
+
+bool export_render_target(ol::RenderState* renderer, const char* out_path) {
+    Image img = LoadImageFromTexture(renderer->target.texture);
+    ImageFlipVertical(&img);
+    const bool exported = ExportImage(img, out_path);
+    UnloadImage(img);
+    return exported;
+}
+
+bool run_edge_compare_test() {
+    SetTraceLogLevel(LOG_WARNING);
+    SetConfigFlags(FLAG_WINDOW_HIDDEN);
+    InitWindow(960, 540, "ol edge compare");
+
+    ol::RenderState renderer{};
+    ol::renderer_init(&renderer);
+
+    auto app = std::make_unique<ol::DemoApp>();
+    ol::demo_generate_world(app.get());
+    ol::Dimension* dim = ol::world_get_dimension(&app->world, app->dimension_id);
+
+    std::filesystem::create_directories("test-output");
+    const EdgeCompareView views[] = {
+        {"overview", {0.0f, 1.65f, 15.0f}, {0.0f, 1.1f, -3.0f}},
+        {"stairs", {-11.5f, 2.2f, 14.0f}, {-8.0f, 1.0f, 8.0f}},
+        {"stair-tunnel", {-8.0f, 2.8f, 11.0f}, {10.5f, 0.9f, -3.5f}},
+        {"tunnel-ramp", {15.0f, 1.8f, 2.2f}, {8.5f, 1.1f, 8.4f}},
+        {"tunnel-ramp-close", {13.8f, 1.35f, 0.6f}, {10.3f, 0.75f, -3.4f}},
+        {"user-tunnel-stairs", {6.1099f, 2.7000f, 11.4536f}, {9.0207f, 1.9794f, 4.0368f}},
+        {"user-tunnel-outside", {6.6376f, 1.6500f, -4.5389f}, {14.3344f, 0.0418f, -3.0650f}},
+        {"user-tunnel-inside", {10.3368f, 0.8000f, -3.6188f}, {11.0135f, -0.4793f, 4.2492f}},
+        {"user-wall", {6.8266f, 1.6500f, -5.5259f}, {11.4904f, 1.8436f, -12.0230f}},
+        {"wall-blocks", {-12.5f, 1.7f, 1.0f}, {2.0f, 1.0f, -5.0f}},
+    };
+
+    bool ok = expect_true(dim != nullptr, "Edge comparison has a generated dimension");
+    ol::renderer_ensure_target(&renderer);
+    for (const EdgeCompareView& view_def : views) {
+        if (!dim) break;
+        const ol::CameraView view = make_edge_compare_camera(app->dimension_id, dim, view_def);
+
+        char old_path[128]{};
+        char new_path[128]{};
+        std::snprintf(old_path, sizeof(old_path), "test-output/edge-compare-%s-2d.png", view_def.name);
+        std::snprintf(new_path, sizeof(new_path), "test-output/edge-compare-%s-depth.png", view_def.name);
+
+        renderer.depth_test_edges = false;
+        ol::renderer_draw_dimension(&renderer, dim, view, app->local_player_id);
+        ok = expect_true(export_render_target(&renderer, old_path), "2D edge comparison image exported") && ok;
+
+        renderer.depth_test_edges = true;
+        ol::renderer_draw_dimension(&renderer, dim, view, app->local_player_id);
+        ok = expect_true(export_render_target(&renderer, new_path), "Depth edge comparison image exported") && ok;
+    }
+
+    ol::renderer_shutdown(&renderer);
+    CloseWindow();
+    if (ok) std::printf("edge comparison images exported to test-output/edge-compare-*.png\n");
+    return ok;
+}
+
+struct TestDepthBuffer {
+    std::vector<float> pixels{};
+    int width = 0;
+    int height = 0;
+};
+
+struct TestProjectedPoint {
+    Vector2 screen{};
+    float depth = 0.0f;
+    Vector3 rel{};
+};
+
+struct TestTriangle {
+    Vector3 a{};
+    Vector3 b{};
+    Vector3 c{};
+};
+
+Camera3D make_test_camera(const ol::CameraView& view, float fov) {
+    Camera3D camera{};
+    camera.position = {0.0f, view.eye_height, 0.0f};
+    camera.target = camera.position + ol::forward_from_angles(view.yaw, view.pitch);
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.fovy = fov;
+    camera.projection = CAMERA_PERSPECTIVE;
+    return camera;
+}
+
+bool project_test_point(Vector3 p, const Matrix& view_matrix, const Matrix& projection_matrix, int width, int height, TestProjectedPoint* out) {
+    Quaternion projected = {p.x, p.y, p.z, 1.0f};
+    projected = QuaternionTransform(projected, view_matrix);
+    projected = QuaternionTransform(projected, projection_matrix);
+    if (std::fabs(projected.w) < 0.000001f) return false;
+
+    const float inv_w = 1.0f / projected.w;
+    const float ndc_x = projected.x * inv_w;
+    const float ndc_y = projected.y * inv_w;
+    const float ndc_z = projected.z * inv_w;
+    if (!std::isfinite(ndc_x) || !std::isfinite(ndc_y) || !std::isfinite(ndc_z)) return false;
+
+    out->screen = {
+        (ndc_x + 1.0f) * 0.5f * static_cast<float>(width),
+        (1.0f - ndc_y) * 0.5f * static_cast<float>(height)
+    };
+    out->depth = (ndc_z + 1.0f) * 0.5f;
+    out->rel = p;
+    return true;
+}
+
+TestDepthBuffer read_test_depth_target(const ol::RenderState& renderer) {
+    TestDepthBuffer depth{};
+    depth.width = renderer.native_w;
+    depth.height = renderer.native_h;
+    depth.pixels.resize(static_cast<size_t>(depth.width) * static_cast<size_t>(depth.height), 1.0f);
+
+    rlDrawRenderBatchActive();
+    rlEnableFramebuffer(renderer.target.id);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, depth.width, depth.height, GL_DEPTH_COMPONENT, GL_FLOAT, depth.pixels.data());
+    rlDisableFramebuffer();
+    return depth;
+}
+
+bool test_depth_footprint_visible(const TestDepthBuffer& depth, Vector2 p, float edge_depth) {
+    constexpr float edge_depth_bias = 0.00035f;
+    const int center_x = static_cast<int>(std::floor(p.x + 0.5f));
+    const int center_y = static_cast<int>(std::floor(p.y + 0.5f));
+    if (center_x < 0 || center_x >= depth.width || center_y < 0 || center_y >= depth.height) return true;
+    const int gl_y = depth.height - 1 - center_y;
+    const float v = depth.pixels[static_cast<size_t>(gl_y) * static_cast<size_t>(depth.width) + static_cast<size_t>(center_x)];
+    return edge_depth <= v + edge_depth_bias;
+}
+
+bool test_filter_visible(const TestDepthBuffer& depth, const TestProjectedPoint& a, const TestProjectedPoint& b, float t) {
+    const Vector2 p = a.screen + (b.screen - a.screen) * t;
+    const float edge_depth = a.depth + (b.depth - a.depth) * t;
+    return test_depth_footprint_visible(depth, p, edge_depth);
+}
+
+bool ray_intersects_triangle(Vector3 origin, Vector3 dir, const TestTriangle& tri, float max_dist) {
+    constexpr float eps = 0.00001f;
+    const Vector3 e1 = tri.b - tri.a;
+    const Vector3 e2 = tri.c - tri.a;
+    const Vector3 h = Vector3CrossProduct(dir, e2);
+    const float det = Vector3DotProduct(e1, h);
+    if (std::fabs(det) < eps) return false;
+
+    const float inv_det = 1.0f / det;
+    const Vector3 s = origin - tri.a;
+    const float u = inv_det * Vector3DotProduct(s, h);
+    if (u < -eps || u > 1.0f + eps) return false;
+
+    const Vector3 q = Vector3CrossProduct(s, e1);
+    const float v = inv_det * Vector3DotProduct(dir, q);
+    if (v < -eps || u + v > 1.0f + eps) return false;
+
+    const float dist = inv_det * Vector3DotProduct(e2, q);
+    return dist > 0.002f && dist < max_dist - 0.06f;
+}
+
+bool analytic_visible(Vector3 camera_pos, Vector3 point, const std::vector<TestTriangle>& triangles) {
+    const Vector3 delta = point - camera_pos;
+    const float dist = ol::safe_len(delta);
+    if (dist <= 0.001f) return true;
+    const Vector3 dir = delta / dist;
+    for (const TestTriangle& tri : triangles) {
+        if (ray_intersects_triangle(camera_pos, dir, tri, dist)) return false;
+    }
+    return true;
+}
+
+void collect_test_triangles(ol::Dimension* dim, const ol::CameraView& view, std::vector<TestTriangle>* triangles) {
+    triangles->clear();
+    for (ol::u32 slot = 0; slot < dim->meshes.count; ++slot) {
+        const ol::MeshInstance* mesh = &dim->meshes.data[slot];
+        const ol::MeshGeometry* geometry = ol::arena_get(&dim->geometries, mesh->geometry);
+        if (!mesh->visible || !geometry || geometry->triangle_count == 0) continue;
+
+        Vector3 transformed[ol::max_vertices_per_geometry]{};
+        const Vector3 origin = ol::world_delta_meters(mesh->origin, view.anchor, dim->chunk_size_m);
+        const Matrix basis = ol::matrix_no_translation(mesh->se3);
+        for (ol::u32 i = 0; i < geometry->vertex_count; ++i) {
+            transformed[i] = Vector3Transform(geometry->vertices[i], basis) + origin;
+        }
+        for (ol::u32 i = 0; i < geometry->triangle_count; ++i) {
+            const ol::Triangle tri = geometry->triangles[i];
+            triangles->push_back({transformed[tri.a], transformed[tri.b], transformed[tri.c]});
+        }
+    }
+}
+
+const ol::MeshInstance* find_mesh_by_name(const ol::Dimension* dim, const char* name) {
+    for (ol::u32 slot = 0; slot < dim->meshes.count; ++slot) {
+        const ol::MeshInstance* mesh = &dim->meshes.data[slot];
+        if (std::strcmp(mesh->name, name) == 0) return mesh;
+    }
+    return nullptr;
+}
+
+bool run_edge_visibility_test() {
+    SetTraceLogLevel(LOG_WARNING);
+    SetConfigFlags(FLAG_WINDOW_HIDDEN);
+    InitWindow(960, 540, "ol edge visibility");
+
+    ol::RenderState renderer{};
+    ol::renderer_init(&renderer);
+
+    auto app = std::make_unique<ol::DemoApp>();
+    ol::demo_generate_world(app.get());
+    ol::Dimension* dim = ol::world_get_dimension(&app->world, app->dimension_id);
+    const ol::MeshInstance* tunnel = dim ? find_mesh_by_name(dim, "tunnel contours") : nullptr;
+    const ol::MeshGeometry* tunnel_geometry = (dim && tunnel) ? ol::arena_get(&dim->geometries, tunnel->geometry) : nullptr;
+
+    const EdgeCompareView views[] = {
+        {"tunnel-ramp", {15.0f, 1.8f, 2.2f}, {8.5f, 1.1f, 8.4f}},
+        {"tunnel-ramp-close", {13.8f, 1.35f, 0.6f}, {10.3f, 0.75f, -3.4f}},
+        {"stair-tunnel", {-8.0f, 2.8f, 11.0f}, {10.5f, 0.9f, -3.5f}},
+        {"user-tunnel-stairs", {6.1099f, 2.7000f, 11.4536f}, {9.0207f, 1.9794f, 4.0368f}},
+        {"user-tunnel-outside", {6.6376f, 1.6500f, -4.5389f}, {14.3344f, 0.0418f, -3.0650f}},
+        {"user-tunnel-inside", {10.3368f, 0.8000f, -3.6188f}, {11.0135f, -0.4793f, 4.2492f}},
+        {"tunnel-front", {10.5f, 1.25f, 4.5f}, {10.5f, 0.7f, -3.5f}},
+        {"tunnel-back", {10.5f, 1.25f, -10.5f}, {10.5f, 0.7f, -3.5f}},
+    };
+
+    bool ok = expect_true(dim != nullptr, "Edge visibility has generated dimension") &&
+              expect_true(tunnel != nullptr, "Edge visibility finds tunnel contours") &&
+              expect_true(tunnel_geometry != nullptr, "Edge visibility finds tunnel geometry");
+
+    ol::renderer_ensure_target(&renderer);
+    for (const EdgeCompareView& view_def : views) {
+        if (!dim || !tunnel || !tunnel_geometry) break;
+
+        const ol::CameraView view = make_edge_compare_camera(app->dimension_id, dim, view_def);
+        renderer.depth_test_edges = true;
+        ol::renderer_draw_dimension(&renderer, dim, view, app->local_player_id);
+        const TestDepthBuffer depth = read_test_depth_target(renderer);
+
+        const Camera3D camera = make_test_camera(view, renderer.fov);
+        const Matrix view_matrix = MatrixLookAt(camera.position, camera.target, camera.up);
+        const Matrix projection_matrix = MatrixPerspective(
+            camera.fovy * DEG2RAD,
+            static_cast<double>(renderer.native_w) / static_cast<double>(renderer.native_h),
+            rlGetCullDistanceNear(),
+            rlGetCullDistanceFar()
+        );
+        std::vector<TestTriangle> triangles;
+        collect_test_triangles(dim, view, &triangles);
+
+        Vector3 transformed[ol::max_vertices_per_geometry]{};
+        const Vector3 origin = ol::world_delta_meters(tunnel->origin, view.anchor, dim->chunk_size_m);
+        const Matrix basis = ol::matrix_no_translation(tunnel->se3);
+        for (ol::u32 i = 0; i < tunnel_geometry->vertex_count; ++i) {
+            transformed[i] = Vector3Transform(tunnel_geometry->vertices[i], basis) + origin;
+        }
+
+        int samples = 0;
+        int mismatches = 0;
+        int false_visible = 0;
+        int false_hidden = 0;
+        int depth_only_mismatches = 0;
+        int edge_false_visible[ol::max_edges_per_geometry]{};
+        int edge_false_hidden[ol::max_edges_per_geometry]{};
+        for (ol::u32 edge_i = 0; edge_i < tunnel_geometry->edge_count; ++edge_i) {
+            const ol::Edge edge = tunnel_geometry->edges[edge_i];
+            TestProjectedPoint a{};
+            TestProjectedPoint b{};
+            if (!project_test_point(transformed[edge.a], view_matrix, projection_matrix, renderer.native_w, renderer.native_h, &a)) continue;
+            if (!project_test_point(transformed[edge.b], view_matrix, projection_matrix, renderer.native_w, renderer.native_h, &b)) continue;
+            for (int i = 0; i <= 16; ++i) {
+                const float t = static_cast<float>(i) / 16.0f;
+                const Vector3 point = transformed[edge.a] + (transformed[edge.b] - transformed[edge.a]) * t;
+                const bool expected = analytic_visible(camera.position, point, triangles);
+                const bool depth_only = test_filter_visible(depth, a, b, t);
+                const bool actual = analytic_visible(camera.position, point, triangles);
+                if (expected != depth_only) ++depth_only_mismatches;
+                if (expected != actual) {
+                    ++mismatches;
+                    if (actual) {
+                        ++false_visible;
+                        ++edge_false_visible[edge_i];
+                    } else {
+                        ++false_hidden;
+                        ++edge_false_hidden[edge_i];
+                    }
+                }
+                ++samples;
+            }
+        }
+
+        const float mismatch_rate = samples > 0 ? static_cast<float>(mismatches) / static_cast<float>(samples) : 1.0f;
+        std::printf("edge visibility %s: %d/%d mismatches (%.3f), false-visible %d, false-hidden %d, depth-only mismatches %d\n", view_def.name, mismatches, samples, mismatch_rate, false_visible, false_hidden, depth_only_mismatches);
+        for (ol::u32 edge_i = 0; edge_i < tunnel_geometry->edge_count; ++edge_i) {
+            if (edge_false_visible[edge_i] == 0 && edge_false_hidden[edge_i] == 0) continue;
+            const ol::Edge edge = tunnel_geometry->edges[edge_i];
+            std::printf("  edge %u (%u-%u): false-visible %d, false-hidden %d\n", edge_i, edge.a, edge.b, edge_false_visible[edge_i], edge_false_hidden[edge_i]);
+        }
+        ok = expect_true(samples > 0, "Edge visibility sampled tunnel edges") && ok;
+    }
+
+    ol::renderer_shutdown(&renderer);
+    CloseWindow();
     return ok;
 }
 
@@ -1523,16 +1867,22 @@ int main(int argc, char** argv) {
     bool run_physics = argc == 1;
     bool run_visual = argc == 1;
     bool run_menu = argc == 1;
+    bool run_edge_compare = false;
+    bool run_edge_visibility = false;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--physics") == 0) run_physics = true;
         if (std::strcmp(argv[i], "--visual") == 0) run_visual = true;
         if (std::strcmp(argv[i], "--menu") == 0) run_menu = true;
+        if (std::strcmp(argv[i], "--edge-compare") == 0) run_edge_compare = true;
+        if (std::strcmp(argv[i], "--edge-visibility") == 0) run_edge_visibility = true;
     }
 
     bool ok = true;
     if (run_physics) ok = run_physics_tests() && ok;
     if (run_visual) ok = run_visual_test() && ok;
+    if (run_edge_compare) ok = run_edge_compare_test() && ok;
+    if (run_edge_visibility) ok = run_edge_visibility_test() && ok;
     if (run_menu) ok = run_menu_visual_test() && ok;
     return ok ? 0 : 1;
 }

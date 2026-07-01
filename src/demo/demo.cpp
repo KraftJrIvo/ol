@@ -74,7 +74,112 @@ static void add_static_box(Dimension* dim, u32 dimension_id, u32 cube_geom, cons
     physics_add_box(&dim->physics, box);
 }
 
-static void generate_demo_world(DemoApp* app) {
+static u16 add_contour_vertex(MeshGeometry* geometry, Vector3 vertex) {
+    if (geometry->vertex_count >= max_vertices_per_geometry) return 0;
+    const u16 index = static_cast<u16>(geometry->vertex_count++);
+    geometry->vertices[index] = vertex;
+    return index;
+}
+
+static void add_contour_edge(MeshGeometry* geometry, u16 a, u16 b, u8 thickness_px = 2) {
+    if (geometry->edge_count >= max_edges_per_geometry) return;
+    geometry->edges[geometry->edge_count++] = {a, b, thickness_px};
+}
+
+static MeshGeometry make_stair_contour_geometry(const char* name) {
+    MeshGeometry geometry{};
+    std::snprintf(geometry.name, sizeof(geometry.name), "%s", name);
+
+    constexpr float xh = 1.5f;
+    constexpr float z0 = -4.5f;
+    constexpr float z1 = -1.5f;
+    constexpr float z2 = 1.5f;
+    constexpr float z3 = 4.5f;
+    constexpr float y0 = -0.5f;
+    constexpr float y1 = 0.5f;
+    constexpr float y2 = 1.5f;
+    constexpr float y3 = 2.5f;
+
+    const Vector3 left[] = {
+        {-xh, y0, z0}, {-xh, y0, z3}, {-xh, y3, z3}, {-xh, y3, z2},
+        {-xh, y2, z2}, {-xh, y2, z1}, {-xh, y1, z1}, {-xh, y1, z0},
+    };
+    const Vector3 right[] = {
+        { xh, y0, z0}, { xh, y0, z3}, { xh, y3, z3}, { xh, y3, z2},
+        { xh, y2, z2}, { xh, y2, z1}, { xh, y1, z1}, { xh, y1, z0},
+    };
+
+    u16 left_indices[8]{};
+    u16 right_indices[8]{};
+    for (u32 i = 0; i < 8; ++i) {
+        left_indices[i] = add_contour_vertex(&geometry, left[i]);
+        right_indices[i] = add_contour_vertex(&geometry, right[i]);
+    }
+    for (u32 i = 0; i < 8; ++i) {
+        const u32 next = (i + 1) % 8;
+        add_contour_edge(&geometry, left_indices[i], left_indices[next]);
+        add_contour_edge(&geometry, right_indices[i], right_indices[next]);
+        add_contour_edge(&geometry, left_indices[i], right_indices[i]);
+    }
+    return geometry;
+}
+
+static MeshGeometry make_tunnel_contour_geometry(const char* name) {
+    MeshGeometry geometry{};
+    std::snprintf(geometry.name, sizeof(geometry.name), "%s", name);
+
+    constexpr float x0 = -1.725f;
+    constexpr float x1 = -1.275f;
+    constexpr float x2 = 1.275f;
+    constexpr float x3 = 1.725f;
+    constexpr float y0 = -0.65f;
+    constexpr float y1 = 0.35f;
+    constexpr float y2 = 0.65f;
+    constexpr float z0 = -2.5f;
+    constexpr float z1 = 2.5f;
+
+    const Vector3 front[] = {
+        {x0, y0, z0}, {x0, y2, z0}, {x3, y2, z0}, {x3, y0, z0},
+        {x2, y0, z0}, {x2, y1, z0}, {x1, y1, z0}, {x1, y0, z0},
+    };
+    const Vector3 back[] = {
+        {x0, y0, z1}, {x0, y2, z1}, {x3, y2, z1}, {x3, y0, z1},
+        {x2, y0, z1}, {x2, y1, z1}, {x1, y1, z1}, {x1, y0, z1},
+    };
+
+    u16 front_indices[8]{};
+    u16 back_indices[8]{};
+    for (u32 i = 0; i < 8; ++i) {
+        front_indices[i] = add_contour_vertex(&geometry, front[i]);
+        back_indices[i] = add_contour_vertex(&geometry, back[i]);
+    }
+    for (u32 i = 0; i < 8; ++i) {
+        const u32 next = (i + 1) % 8;
+        add_contour_edge(&geometry, front_indices[i], front_indices[next]);
+        add_contour_edge(&geometry, back_indices[i], back_indices[next]);
+        add_contour_edge(&geometry, front_indices[i], back_indices[i]);
+    }
+    return geometry;
+}
+
+static void add_contour_mesh(Dimension* dim, u32 dimension_id, MeshGeometry geometry, const char* name, Vector3 origin, float bounds_radius) {
+    const u32 geometry_id = dimension_add_geometry(dim, geometry);
+    MeshGeometry* stored_geometry = arena_get(&dim->geometries, geometry_id);
+    if (stored_geometry) stored_geometry->lod_geometry = geometry_id;
+
+    MeshInstance mesh{};
+    std::snprintf(mesh.name, sizeof(mesh.name), "%s", name);
+    mesh.geometry = geometry_id;
+    mesh.origin = demo_pos(dimension_id, origin, dim->chunk_size_m);
+    mesh.se3 = MatrixIdentity();
+    mesh.color = BLACK;
+    mesh.bounds_radius = bounds_radius;
+    mesh.lit = false;
+    mesh.draw_edges = true;
+    dimension_add_mesh(dim, mesh);
+}
+
+void demo_generate_world(DemoApp* app) {
     world_init(&app->world);
     reset_remote_players(app);
     app->dimension_id = world_add_dimension(&app->world, "default", 16.0f, 64.0f);
@@ -100,12 +205,15 @@ static void generate_demo_world(DemoApp* app) {
     add_static_box(dim, app->dimension_id, cube_id, "west wall", {-18.0f, 1.5f, 0.0f}, {1.0f, 4.0f, 40.0f}, {93, 113, 123, 255}, false, true);
     add_static_box(dim, app->dimension_id, cube_id, "block a", {4.0f, 0.5f, -4.0f}, {2.5f, 2.0f, 2.5f}, {174, 96, 88, 255});
     add_static_box(dim, app->dimension_id, cube_id, "block b", {-4.0f, 0.25f, -2.0f}, {2.0f, 1.5f, 5.0f}, {96, 145, 112, 255});
-    add_static_box(dim, app->dimension_id, cube_id, "tunnel left", {9.0f, 0.5f, -3.5f}, {0.45f, 1.0f, 5.0f}, {108, 120, 145, 255}, false, true);
-    add_static_box(dim, app->dimension_id, cube_id, "tunnel right", {12.0f, 0.5f, -3.5f}, {0.45f, 1.0f, 5.0f}, {108, 120, 145, 255}, false, true);
-    add_static_box(dim, app->dimension_id, cube_id, "tunnel roof", {10.5f, 1.15f, -3.5f}, {3.45f, 0.30f, 5.0f}, {93, 102, 130, 255}, false, true);
-    add_static_box(dim, app->dimension_id, cube_id, "step 1", {-8.0f, 0.0f, 5.0f}, {3.0f, 1.0f, 3.0f}, {166, 151, 92, 255});
-    add_static_box(dim, app->dimension_id, cube_id, "step 2", {-8.0f, 0.5f, 8.0f}, {3.0f, 2.0f, 3.0f}, {174, 160, 101, 255});
-    add_static_box(dim, app->dimension_id, cube_id, "step 3", {-8.0f, 1.0f, 11.0f}, {3.0f, 3.0f, 3.0f}, {185, 171, 112, 255});
+    add_static_box(dim, app->dimension_id, cube_id, "tunnel left", {9.0f, 0.5f, -3.5f}, {0.45f, 1.0f, 5.0f}, {108, 120, 145, 255}, false, false);
+    add_static_box(dim, app->dimension_id, cube_id, "tunnel right", {12.0f, 0.5f, -3.5f}, {0.45f, 1.0f, 5.0f}, {108, 120, 145, 255}, false, false);
+    add_static_box(dim, app->dimension_id, cube_id, "tunnel roof", {10.5f, 1.15f, -3.5f}, {3.45f, 0.30f, 5.0f}, {93, 102, 130, 255}, false, false);
+    add_contour_mesh(dim, app->dimension_id, make_tunnel_contour_geometry("tunnel contours"), "tunnel contours", {10.5f, 0.65f, -3.5f}, 3.2f);
+
+    add_static_box(dim, app->dimension_id, cube_id, "step 1", {-8.0f, 0.0f, 5.0f}, {3.0f, 1.0f, 3.0f}, {166, 151, 92, 255}, true, false);
+    add_static_box(dim, app->dimension_id, cube_id, "step 2", {-8.0f, 0.5f, 8.0f}, {3.0f, 2.0f, 3.0f}, {174, 160, 101, 255}, true, false);
+    add_static_box(dim, app->dimension_id, cube_id, "step 3", {-8.0f, 1.0f, 11.0f}, {3.0f, 3.0f, 3.0f}, {185, 171, 112, 255}, true, false);
+    add_contour_mesh(dim, app->dimension_id, make_stair_contour_geometry("stair contours"), "stair contours", {-8.0f, 0.0f, 8.0f}, 5.5f);
 
     MeshInstance ramp{};
     std::snprintf(ramp.name, sizeof(ramp.name), "visual ramp");
@@ -179,7 +287,7 @@ void demo_init(DemoApp* app) {
     SetTargetFPS(120);
     renderer_init(&app->renderer);
     net_init(&app->net);
-    generate_demo_world(app);
+    demo_generate_world(app);
 }
 
 void demo_shutdown(DemoApp* app) {
@@ -229,14 +337,14 @@ static void update_menu(DemoApp* app) {
     }
     if (host_pressed) {
         net_host(&app->net, app->session_name);
-        generate_demo_world(app);
+        demo_generate_world(app);
         app->in_game = true;
         app->mouse_captured = true;
         DisableCursor();
     }
     if (join_pressed) {
         net_join_from_clipboard(&app->net);
-        generate_demo_world(app);
+        demo_generate_world(app);
         app->in_game = true;
         app->mouse_captured = true;
         DisableCursor();
@@ -305,6 +413,8 @@ static NetPlayerState make_net_player_state(DemoApp* app, Dimension* dim, const 
     state.local = feet.local;
     state.yaw = player->yaw;
     state.pitch = player->pitch;
+    state.body_radius = player->body_radius;
+    state.current_height = player->current_height;
     state.color = player->color;
     std::snprintf(state.name, sizeof(state.name), "%s", player->name);
     return state;
@@ -336,6 +446,41 @@ static bool net_peer_present(const NetSession* net, u64 peer_id) {
         if (net->peer_ids[i] == peer_id) return true;
     }
     return false;
+}
+
+static Vector3 worldpos_to_meters(WorldPos pos, float chunk_size) {
+    return {
+        static_cast<float>(world_axis_meters(pos.chunk.x, pos.local.x, chunk_size)),
+        static_cast<float>(world_axis_meters(pos.chunk.y, pos.local.y, chunk_size)),
+        static_cast<float>(world_axis_meters(pos.chunk.z, pos.local.z, chunk_size)),
+    };
+}
+
+static void copy_current_view_to_clipboard(const Dimension* dim, const CameraView& view) {
+    const WorldPos eye_pos = worldpos_offset(view.anchor, {0.0f, view.eye_height, 0.0f}, dim->chunk_size_m);
+    const Vector3 eye = worldpos_to_meters(eye_pos, dim->chunk_size_m);
+    const Vector3 target = eye + forward_from_angles(view.yaw, view.pitch) * 8.0f;
+    const Vector3 feet = worldpos_to_meters(view.anchor, dim->chunk_size_m);
+
+    char text[512]{};
+    std::snprintf(
+        text,
+        sizeof(text),
+        "EdgeCompareView{\"clipboard\", {%.4ff, %.4ff, %.4ff}, {%.4ff, %.4ff, %.4ff}}\n"
+        "feet={%.4ff, %.4ff, %.4ff} yaw=%.6ff pitch=%.6ff",
+        eye.x,
+        eye.y,
+        eye.z,
+        target.x,
+        target.y,
+        target.z,
+        feet.x,
+        feet.y,
+        feet.z,
+        view.yaw,
+        view.pitch);
+    SetClipboardText(text);
+    TraceLog(LOG_INFO, "Copied camera view to clipboard");
 }
 
 static void remove_remote_player(Dimension* dim, u32 player_id) {
@@ -385,6 +530,10 @@ static void sync_remote_players(DemoApp* app, Dimension* dim) {
         remote->color = state.color;
         remote->yaw = state.yaw;
         remote->pitch = state.pitch;
+        remote->body_radius = state.body_radius > 0.0f ? state.body_radius : player_radius_m;
+        remote->current_height = state.current_height > 0.0f ? state.current_height : player_stand_height_m;
+        remote->eye_height = remote->current_height < player_stand_height_m - 0.01f ? player_crouch_eye_m : player_stand_eye_m;
+        remote->is_crouching = remote->current_height < player_stand_height_m - 0.01f;
         remote->connected = true;
         remote->local = false;
         player_sync_masses_to_pose(dim, remote, feet);
@@ -419,6 +568,7 @@ static void update_game(DemoApp* app) {
     view.eye_height = player->eye_height + player->camera_y_offset;
     view.yaw = player->yaw;
     view.pitch = player->pitch;
+    if (IsKeyPressed(KEY_O)) copy_current_view_to_clipboard(dim, view);
     renderer_ensure_target(&app->renderer);
     renderer_draw_dimension(&app->renderer, dim, view, app->local_player_id);
 }
@@ -442,7 +592,7 @@ int demo_run_steam_host_smoke(double timeout_s, double hold_s) {
     auto* app = new DemoApp();
     demo_init(app);
     net_host(&app->net, app->session_name);
-    generate_demo_world(app);
+    demo_generate_world(app);
 
     const double start = GetTime();
     while (GetTime() - start < timeout_s) {
@@ -484,7 +634,7 @@ int demo_run_steam_join_smoke(const char* lobby_id, double timeout_s) {
     demo_init(app);
     SetClipboardText(lobby_id ? lobby_id : "");
     net_join_from_clipboard(&app->net);
-    generate_demo_world(app);
+    demo_generate_world(app);
 
     const double start = GetTime();
     while (GetTime() - start < timeout_s) {

@@ -36,6 +36,7 @@ struct DemoApp {
 
 void demo_init(DemoApp* app);
 void demo_shutdown(DemoApp* app);
+void demo_generate_world(DemoApp* app);
 void demo_draw_menu(DemoApp* app);
 bool demo_update_and_draw(DemoApp* app);
 int demo_run_steam_host_smoke(double timeout_s, double hold_s);

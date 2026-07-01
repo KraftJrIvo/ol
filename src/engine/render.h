@@ -27,6 +27,7 @@ struct RenderState {
     int scale_power = 0;
     float fov = 90.0f;
     bool draw_physics_debug = false;
+    bool depth_test_edges = true;
 };
 
 void renderer_init(RenderState* renderer);

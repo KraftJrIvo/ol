@@ -72,7 +72,7 @@ add_executable(ol ${OL_DEMO_SOURCES})
 target_link_libraries(ol PRIVATE ol_engine)
 
 add_executable(ol_tests tests/engine_tests.cpp)
-target_sources(ol_tests PRIVATE src/demo/menu.cpp)
+target_sources(ol_tests PRIVATE src/demo/menu.cpp src/demo/demo.cpp)
 target_link_libraries(ol_tests PRIVATE ol_engine)
 
 enable_testing()
