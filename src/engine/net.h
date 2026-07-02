@@ -20,7 +20,8 @@ enum NetPacketType : u32 {
     net_packet_snapshot = 2,
     net_packet_join = 3,
     net_packet_welcome = 4,
-    net_packet_player_state = 5
+    net_packet_player_state = 5,
+    net_packet_restore_player = 6
 };
 
 struct NetPlayerState {
@@ -77,6 +78,8 @@ struct NetSession {
     std::array<bool, max_players> remote_player_valid{};
     NetPlayerState local_player{};
     bool local_player_valid = false;
+    NetPlayerState restore_player{};
+    bool restore_player_valid = false;
     char session_name[32] = "session";
     char status[128]{};
     void* steam_state = nullptr;
@@ -86,8 +89,11 @@ void net_init(NetSession* net);
 void net_shutdown(NetSession* net);
 void net_host(NetSession* net, const char* session_name);
 void net_join_from_clipboard(NetSession* net);
+void net_leave(NetSession* net);
 void net_copy_lobby_to_clipboard(NetSession* net);
 void net_set_local_player(NetSession* net, const NetPlayerState& player);
+void net_send_player_restore(NetSession* net, u64 peer_id, const NetPlayerState& player);
+bool net_take_player_restore(NetSession* net, NetPlayerState* out_player);
 void net_update(NetSession* net);
 
 } // namespace ol

@@ -4,9 +4,13 @@
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace ol {
+
+static void record_current_world_state(DemoApp* app);
+static void save_profile(DemoApp* app);
 
 static void add_text_char(char* text, size_t cap, int c) {
     if (c < 32 || c > 126) return;
@@ -14,6 +18,356 @@ static void add_text_char(char* text, size_t cap, int c) {
     if (len + 1 >= cap) return;
     text[len] = static_cast<char>(c);
     text[len + 1] = 0;
+}
+
+static void remove_text_char(char* text) {
+    const size_t len = std::strlen(text);
+    if (len > 0) text[len - 1] = 0;
+}
+
+static char* active_menu_text(DemoApp* app, size_t* out_cap) {
+    if (app->active_menu_field == menu_input_player) {
+        if (out_cap) *out_cap = sizeof(app->player_name);
+        return app->player_name;
+    }
+    if (app->active_menu_field == menu_input_session) {
+        if (out_cap) *out_cap = sizeof(app->session_name);
+        return app->session_name;
+    }
+    if (out_cap) *out_cap = 0;
+    return nullptr;
+}
+
+static void set_player_color_component(DemoApp* app, u32 control, int value) {
+    value = static_cast<int>(clampf(static_cast<float>(value), 0.0f, 255.0f));
+    if (control == menu_control_color_r) app->player_color.r = static_cast<unsigned char>(value);
+    if (control == menu_control_color_g) app->player_color.g = static_cast<unsigned char>(value);
+    if (control == menu_control_color_b) app->player_color.b = static_cast<unsigned char>(value);
+}
+
+static void copy_text(char* dst, size_t cap, const char* src) {
+    if (!dst || cap == 0) return;
+    std::snprintf(dst, cap, "%s", src ? src : "");
+}
+
+static void mark_profile_dirty(DemoApp* app) {
+    app->profile_dirty = true;
+}
+
+static u64 local_player_peer_id(const DemoApp* app) {
+    return app->net.local_peer_id;
+}
+
+static int find_session_index(const DemoProfile& profile, const char* name) {
+    if (!name || !name[0]) return -1;
+    for (u32 i = 0; i < profile.session_count; ++i) {
+        if (profile.sessions[i].valid && std::strcmp(profile.sessions[i].name, name) == 0) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+static SavedSessionState* find_session(DemoProfile* profile, const char* name) {
+    const int idx = find_session_index(*profile, name);
+    return idx >= 0 ? &profile->sessions[static_cast<u32>(idx)] : nullptr;
+}
+
+static const SavedSessionState* find_session(const DemoProfile* profile, const char* name) {
+    const int idx = find_session_index(*profile, name);
+    return idx >= 0 ? &profile->sessions[static_cast<u32>(idx)] : nullptr;
+}
+
+static SavedSessionState* upsert_session(DemoProfile* profile, const char* name) {
+    if (!name || !name[0]) return nullptr;
+
+    const int existing = find_session_index(*profile, name);
+    SavedSessionState session{};
+    if (existing >= 0) {
+        session = profile->sessions[static_cast<u32>(existing)];
+        for (int i = existing; i > 0; --i) {
+            profile->sessions[static_cast<u32>(i)] = profile->sessions[static_cast<u32>(i - 1)];
+        }
+    } else {
+        if (profile->session_count < max_saved_sessions) {
+            profile->session_count++;
+        }
+        for (u32 i = profile->session_count - 1; i > 0; --i) {
+            profile->sessions[i] = profile->sessions[i - 1];
+        }
+        session = SavedSessionState{};
+        session.valid = true;
+        copy_text(session.name, sizeof(session.name), name);
+    }
+
+    session.valid = true;
+    copy_text(session.name, sizeof(session.name), name);
+    profile->sessions[0] = session;
+    return &profile->sessions[0];
+}
+
+static SavedSessionState* append_loaded_session(DemoProfile* profile, const char* name) {
+    if (!name || !name[0]) return nullptr;
+    if (SavedSessionState* existing = find_session(profile, name)) return existing;
+    if (profile->session_count >= max_saved_sessions) return nullptr;
+
+    SavedSessionState& session = profile->sessions[profile->session_count++];
+    session = SavedSessionState{};
+    session.valid = true;
+    copy_text(session.name, sizeof(session.name), name);
+    return &session;
+}
+
+static void clamp_session_scroll(DemoApp* app) {
+    const int max_scroll = app->profile.session_count > max_visible_session_rows
+        ? static_cast<int>(app->profile.session_count - max_visible_session_rows)
+        : 0;
+    if (app->session_scroll < 0) app->session_scroll = 0;
+    if (app->session_scroll > max_scroll) app->session_scroll = max_scroll;
+}
+
+static void remove_session_at(DemoApp* app, int index) {
+    if (index < 0 || static_cast<u32>(index) >= app->profile.session_count) return;
+    char removed_name[32]{};
+    copy_text(removed_name, sizeof(removed_name), app->profile.sessions[static_cast<u32>(index)].name);
+
+    for (u32 i = static_cast<u32>(index); i + 1 < app->profile.session_count; ++i) {
+        app->profile.sessions[i] = app->profile.sessions[i + 1];
+    }
+    if (app->profile.session_count > 0) {
+        app->profile.session_count--;
+        app->profile.sessions[app->profile.session_count] = SavedSessionState{};
+    }
+
+    if (std::strcmp(app->session_name, removed_name) == 0) {
+        const char* replacement = app->profile.session_count > 0 ? app->profile.sessions[0].name : "session";
+        copy_text(app->session_name, sizeof(app->session_name), replacement);
+        copy_text(app->profile.session_name, sizeof(app->profile.session_name), app->session_name);
+    }
+    app->deleting_session_index = -1;
+    app->delete_hold_active = false;
+    clamp_session_scroll(app);
+    mark_profile_dirty(app);
+}
+
+static SavedPlayerState* find_saved_player(SavedSessionState* session, u64 peer_id) {
+    if (!session) return nullptr;
+    for (u32 i = 0; i < session->player_count; ++i) {
+        if (session->players[i].valid && session->players[i].peer_id == peer_id) return &session->players[i];
+    }
+    return nullptr;
+}
+
+static const SavedPlayerState* find_saved_player(const SavedSessionState* session, u64 peer_id) {
+    if (!session) return nullptr;
+    for (u32 i = 0; i < session->player_count; ++i) {
+        if (session->players[i].valid && session->players[i].peer_id == peer_id) return &session->players[i];
+    }
+    return nullptr;
+}
+
+static void upsert_player_state(SavedSessionState* session, const SavedPlayerState& state) {
+    if (!session || !state.valid) return;
+    if (SavedPlayerState* existing = find_saved_player(session, state.peer_id)) {
+        *existing = state;
+        return;
+    }
+    if (session->player_count >= max_players) return;
+    session->players[session->player_count++] = state;
+}
+
+static char hex_digit(unsigned v) {
+    return static_cast<char>(v < 10 ? ('0' + v) : ('A' + (v - 10)));
+}
+
+static unsigned hex_value(char c) {
+    if (c >= '0' && c <= '9') return static_cast<unsigned>(c - '0');
+    if (c >= 'a' && c <= 'f') return static_cast<unsigned>(c - 'a' + 10);
+    if (c >= 'A' && c <= 'F') return static_cast<unsigned>(c - 'A' + 10);
+    return 0;
+}
+
+static void encode_text_token(const char* src, char* dst, size_t dst_cap) {
+    if (!dst || dst_cap == 0) return;
+    dst[0] = 0;
+    if (!src || !src[0]) {
+        if (dst_cap >= 2) std::snprintf(dst, dst_cap, "-");
+        return;
+    }
+
+    size_t out = 0;
+    for (size_t i = 0; src[i] && out + 2 < dst_cap; ++i) {
+        const unsigned char c = static_cast<unsigned char>(src[i]);
+        dst[out++] = hex_digit((c >> 4) & 0x0f);
+        dst[out++] = hex_digit(c & 0x0f);
+    }
+    dst[out] = 0;
+}
+
+static void decode_text_token(const char* token, char* dst, size_t dst_cap) {
+    if (!dst || dst_cap == 0) return;
+    dst[0] = 0;
+    if (!token || std::strcmp(token, "-") == 0) return;
+
+    size_t out = 0;
+    for (size_t i = 0; token[i] && token[i + 1] && out + 1 < dst_cap; i += 2) {
+        dst[out++] = static_cast<char>((hex_value(token[i]) << 4) | hex_value(token[i + 1]));
+    }
+    dst[out] = 0;
+}
+
+static void load_profile(DemoApp* app) {
+    app->profile = DemoProfile{};
+
+    std::FILE* file = std::fopen("ol_state.txt", "r");
+    if (!file) {
+        copy_text(app->player_name, sizeof(app->player_name), app->profile.player_name);
+        copy_text(app->session_name, sizeof(app->session_name), app->profile.session_name);
+        app->player_color = app->profile.player_color;
+        app->renderer.fov = static_cast<float>(app->profile.fov);
+        app->renderer.scale_power = app->profile.scale_power;
+        return;
+    }
+
+    SavedSessionState* current = nullptr;
+    char line[512]{};
+    while (std::fgets(line, sizeof(line), file)) {
+        char* cmd = std::strtok(line, " \t\r\n");
+        if (!cmd || cmd[0] == '#') continue;
+
+        if (std::strcmp(cmd, "player") == 0) {
+            decode_text_token(std::strtok(nullptr, " \t\r\n"), app->profile.player_name, sizeof(app->profile.player_name));
+        } else if (std::strcmp(cmd, "session") == 0) {
+            decode_text_token(std::strtok(nullptr, " \t\r\n"), app->profile.session_name, sizeof(app->profile.session_name));
+        } else if (std::strcmp(cmd, "color") == 0) {
+            const char* r = std::strtok(nullptr, " \t\r\n");
+            const char* g = std::strtok(nullptr, " \t\r\n");
+            const char* b = std::strtok(nullptr, " \t\r\n");
+            if (r && g && b) {
+                app->profile.player_color = {
+                    static_cast<unsigned char>(clampf(static_cast<float>(std::atoi(r)), 0.0f, 255.0f)),
+                    static_cast<unsigned char>(clampf(static_cast<float>(std::atoi(g)), 0.0f, 255.0f)),
+                    static_cast<unsigned char>(clampf(static_cast<float>(std::atoi(b)), 0.0f, 255.0f)),
+                    255
+                };
+            }
+        } else if (std::strcmp(cmd, "fov") == 0) {
+            const char* value = std::strtok(nullptr, " \t\r\n");
+            if (value) app->profile.fov = static_cast<int>(clampf(static_cast<float>(std::atoi(value)), 60.0f, 120.0f));
+        } else if (std::strcmp(cmd, "scale") == 0) {
+            const char* value = std::strtok(nullptr, " \t\r\n");
+            if (value) app->profile.scale_power = static_cast<int>(clampf(static_cast<float>(std::atoi(value)), 0.0f, 4.0f));
+        } else if (std::strcmp(cmd, "begin") == 0) {
+            char name[32]{};
+            decode_text_token(std::strtok(nullptr, " \t\r\n"), name, sizeof(name));
+            current = name[0] ? append_loaded_session(&app->profile, name) : nullptr;
+        } else if (std::strcmp(cmd, "end") == 0) {
+            current = nullptr;
+        } else if (std::strcmp(cmd, "p") == 0 && current) {
+            const char* peer = std::strtok(nullptr, " \t\r\n");
+            const char* cx = std::strtok(nullptr, " \t\r\n");
+            const char* cy = std::strtok(nullptr, " \t\r\n");
+            const char* cz = std::strtok(nullptr, " \t\r\n");
+            const char* lx = std::strtok(nullptr, " \t\r\n");
+            const char* ly = std::strtok(nullptr, " \t\r\n");
+            const char* lz = std::strtok(nullptr, " \t\r\n");
+            const char* yaw = std::strtok(nullptr, " \t\r\n");
+            const char* pitch = std::strtok(nullptr, " \t\r\n");
+            const char* radius = std::strtok(nullptr, " \t\r\n");
+            const char* height = std::strtok(nullptr, " \t\r\n");
+            const char* cr = std::strtok(nullptr, " \t\r\n");
+            const char* cg = std::strtok(nullptr, " \t\r\n");
+            const char* cb = std::strtok(nullptr, " \t\r\n");
+            const char* name = std::strtok(nullptr, " \t\r\n");
+            if (!peer || !cx || !cy || !cz || !lx || !ly || !lz || !yaw || !pitch || !radius || !height || !cr || !cg || !cb) continue;
+
+            SavedPlayerState state{};
+            state.valid = true;
+            state.peer_id = static_cast<u64>(std::strtoull(peer, nullptr, 10));
+            state.chunk = {std::atoi(cx), std::atoi(cy), std::atoi(cz)};
+            state.local = {std::strtof(lx, nullptr), std::strtof(ly, nullptr), std::strtof(lz, nullptr)};
+            state.yaw = std::strtof(yaw, nullptr);
+            state.pitch = std::strtof(pitch, nullptr);
+            state.body_radius = std::strtof(radius, nullptr);
+            state.current_height = std::strtof(height, nullptr);
+            state.color = {
+                static_cast<unsigned char>(clampf(static_cast<float>(std::atoi(cr)), 0.0f, 255.0f)),
+                static_cast<unsigned char>(clampf(static_cast<float>(std::atoi(cg)), 0.0f, 255.0f)),
+                static_cast<unsigned char>(clampf(static_cast<float>(std::atoi(cb)), 0.0f, 255.0f)),
+                255
+            };
+            decode_text_token(name, state.name, sizeof(state.name));
+            upsert_player_state(current, state);
+        }
+    }
+    std::fclose(file);
+
+    copy_text(app->player_name, sizeof(app->player_name), app->profile.player_name);
+    copy_text(app->session_name, sizeof(app->session_name), app->profile.session_name);
+    app->player_color = app->profile.player_color;
+    app->renderer.fov = static_cast<float>(app->profile.fov);
+    app->renderer.scale_power = app->profile.scale_power;
+    app->profile_dirty = false;
+}
+
+static void save_profile(DemoApp* app) {
+    copy_text(app->profile.player_name, sizeof(app->profile.player_name), app->player_name);
+    copy_text(app->profile.session_name, sizeof(app->profile.session_name), app->session_name);
+    app->profile.player_color = app->player_color;
+    app->profile.fov = static_cast<int>(clampf(floorf(app->renderer.fov + 0.5f), 60.0f, 120.0f));
+    app->profile.scale_power = static_cast<int>(clampf(static_cast<float>(app->renderer.scale_power), 0.0f, 4.0f));
+
+    std::FILE* file = std::fopen("ol_state.txt", "w");
+    if (!file) return;
+
+    char encoded[128]{};
+    std::fprintf(file, "OL_STATE 1\n");
+    encode_text_token(app->profile.player_name, encoded, sizeof(encoded));
+    std::fprintf(file, "player %s\n", encoded);
+    encode_text_token(app->profile.session_name, encoded, sizeof(encoded));
+    std::fprintf(file, "session %s\n", encoded);
+    std::fprintf(file, "color %u %u %u\n",
+        static_cast<unsigned>(app->profile.player_color.r),
+        static_cast<unsigned>(app->profile.player_color.g),
+        static_cast<unsigned>(app->profile.player_color.b));
+    std::fprintf(file, "fov %d\n", app->profile.fov);
+    std::fprintf(file, "scale %d\n", app->profile.scale_power);
+
+    for (u32 i = 0; i < app->profile.session_count; ++i) {
+        const SavedSessionState& session = app->profile.sessions[i];
+        if (!session.valid || !session.name[0]) continue;
+        encode_text_token(session.name, encoded, sizeof(encoded));
+        std::fprintf(file, "begin %s\n", encoded);
+        for (u32 p = 0; p < session.player_count; ++p) {
+            const SavedPlayerState& player = session.players[p];
+            if (!player.valid) continue;
+            char encoded_name[128]{};
+            encode_text_token(player.name, encoded_name, sizeof(encoded_name));
+            std::fprintf(
+                file,
+                "p %llu %d %d %d %.6f %.6f %.6f %.6f %.6f %.6f %.6f %u %u %u %s\n",
+                static_cast<unsigned long long>(player.peer_id),
+                player.chunk.x,
+                player.chunk.y,
+                player.chunk.z,
+                player.local.x,
+                player.local.y,
+                player.local.z,
+                player.yaw,
+                player.pitch,
+                player.body_radius,
+                player.current_height,
+                static_cast<unsigned>(player.color.r),
+                static_cast<unsigned>(player.color.g),
+                static_cast<unsigned>(player.color.b),
+                encoded_name);
+        }
+        std::fprintf(file, "end\n");
+    }
+
+    std::fclose(file);
+    app->profile_dirty = false;
+    app->last_profile_save_time = GetTime();
 }
 
 static WorldPos demo_pos(u32 dimension, Vector3 meters, float chunk_size) {
@@ -179,6 +533,39 @@ static void add_contour_mesh(Dimension* dim, u32 dimension_id, MeshGeometry geom
     dimension_add_mesh(dim, mesh);
 }
 
+static const SavedPlayerState* find_current_session_player_state(const DemoApp* app, u64 peer_id) {
+    const SavedSessionState* session = find_session(&app->profile, app->session_name);
+    return find_saved_player(session, peer_id);
+}
+
+static WorldPos saved_player_feet_pos(u32 dimension_id, const SavedPlayerState& state) {
+    WorldPos pos{};
+    pos.dimension = dimension_id;
+    pos.chunk = state.chunk;
+    pos.local = state.local;
+    return pos;
+}
+
+static void apply_saved_player_state(Dimension* dim, u32 dimension_id, PlayerEntity* player, const SavedPlayerState& state, bool restore_identity) {
+    if (!dim || !player || !state.valid) return;
+
+    if (restore_identity) {
+        copy_text(player->name, sizeof(player->name), state.name[0] ? state.name : player->name);
+        player->color = state.color;
+    }
+    player->yaw = state.yaw;
+    player->pitch = state.pitch;
+    player->body_radius = state.body_radius > 0.0f ? state.body_radius : player_radius_m;
+    player->current_height = state.current_height > 0.0f ? state.current_height : player_stand_height_m;
+    player->eye_height = player->current_height < player_stand_height_m - 0.01f ? player_crouch_eye_m : player_stand_eye_m;
+    player->camera_y_offset = 0.0f;
+    player->velocity = {};
+    player->is_crouching = player->current_height < player_stand_height_m - 0.01f;
+    WorldPos feet = saved_player_feet_pos(dimension_id, state);
+    canonicalize(&feet, dim->chunk_size_m);
+    player_sync_masses_to_pose(dim, player, feet);
+}
+
 void demo_generate_world(DemoApp* app) {
     world_init(&app->world);
     reset_remote_players(app);
@@ -264,13 +651,25 @@ void demo_generate_world(DemoApp* app) {
     blue.intensity = 0.9f;
     dimension_add_light(dim, blue);
 
+    WorldPos local_spawn = demo_pos(app->dimension_id, {0.0f, 0.0f, 8.0f}, dim->chunk_size_m);
+    const SavedPlayerState* saved_local = find_current_session_player_state(app, local_player_peer_id(app));
+    if (saved_local) {
+        local_spawn = saved_player_feet_pos(app->dimension_id, *saved_local);
+        canonicalize(&local_spawn, dim->chunk_size_m);
+    }
+
     app->local_player_id = dimension_add_player(
         dim,
         app->player_name,
         app->player_color,
-        demo_pos(app->dimension_id, {0.0f, 0.0f, 8.0f}, dim->chunk_size_m),
+        local_spawn,
         true
     );
+    if (saved_local) {
+        if (PlayerEntity* player = arena_get(&dim->players, app->local_player_id)) {
+            apply_saved_player_state(dim, app->dimension_id, player, *saved_local, false);
+        }
+    }
 }
 
 void demo_init(DemoApp* app) {
@@ -279,10 +678,22 @@ void demo_init(DemoApp* app) {
     app->fixed_accum = 0.0f;
     app->in_game = false;
     app->mouse_captured = false;
+    app->paused = false;
+    app->active_menu_field = menu_input_player;
+    app->dragged_menu_control = menu_control_none;
+    app->dragged_pause_control = pause_control_none;
+    app->color_picker_open = false;
+    app->sessions_open = false;
+    app->session_scroll = 0;
+    app->deleting_session_index = -1;
+    app->delete_hold_active = false;
+    app->restore_sent_peer_ids.fill(0);
     std::snprintf(app->player_name, sizeof(app->player_name), "player");
-    std::snprintf(app->session_name, sizeof(app->session_name), "playground");
+    std::snprintf(app->session_name, sizeof(app->session_name), "session");
     app->player_color = {90, 180, 255, 255};
+    load_profile(app);
     InitWindow(1280, 720, "OL");
+    SetExitKey(KEY_NULL);
     SetWindowState(FLAG_WINDOW_RESIZABLE);
     SetTargetFPS(120);
     renderer_init(&app->renderer);
@@ -291,63 +702,192 @@ void demo_init(DemoApp* app) {
 }
 
 void demo_shutdown(DemoApp* app) {
+    record_current_world_state(app);
+    save_profile(app);
     net_shutdown(&app->net);
     renderer_shutdown(&app->renderer);
     CloseWindow();
 }
 
 void demo_draw_menu(DemoApp* app) {
+    const char* session_names[max_saved_sessions]{};
+    for (u32 i = 0; i < app->profile.session_count; ++i) {
+        session_names[i] = app->profile.sessions[i].name;
+    }
+    const float delete_progress = app->delete_hold_active
+        ? clampf(static_cast<float>((GetTime() - app->delete_hold_started) / 3.0), 0.0f, 1.0f)
+        : 0.0f;
+
     demo_draw_menu_screen(MenuScreen{
         &app->renderer,
         app->player_name,
         app->session_name,
         app->net.status,
-        app->player_color
+        app->player_color,
+        app->active_menu_field,
+        app->color_picker_open,
+        app->sessions_open,
+        session_names,
+        app->profile.session_count,
+        app->session_scroll,
+        app->deleting_session_index,
+        delete_progress
     });
 }
 
-static void update_menu(DemoApp* app) {
-    const bool color_pressed = IsKeyPressed(KEY_C);
-    const bool host_pressed = IsKeyPressed(KEY_H);
-    const bool join_pressed = IsKeyPressed(KEY_J);
+static void enter_game(DemoApp* app) {
+    demo_generate_world(app);
+    app->in_game = true;
+    app->paused = false;
+    app->mouse_captured = true;
+    app->dragged_pause_control = pause_control_none;
+    app->sessions_open = false;
+    app->restore_sent_peer_ids.fill(0);
+    DisableCursor();
+}
 
+static void host_game(DemoApp* app) {
+    upsert_session(&app->profile, app->session_name);
+    mark_profile_dirty(app);
+    save_profile(app);
+    net_host(&app->net, app->session_name);
+    enter_game(app);
+}
+
+static void join_game(DemoApp* app) {
+    upsert_session(&app->profile, app->session_name);
+    mark_profile_dirty(app);
+    save_profile(app);
+    net_join_from_clipboard(&app->net);
+    enter_game(app);
+}
+
+static void cancel_session_delete(DemoApp* app) {
+    app->delete_hold_active = false;
+    app->delete_hold_started = 0.0;
+    app->deleting_session_index = -1;
+}
+
+static void update_session_delete_hold(DemoApp* app) {
+    if (!app->delete_hold_active) return;
+    if (!IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
+        cancel_session_delete(app);
+        return;
+    }
+
+    const MenuHit hit = demo_menu_hit_test(
+        app->color_picker_open,
+        app->sessions_open,
+        app->session_scroll,
+        app->profile.session_count,
+        GetMousePosition());
+    if (hit.control != menu_control_session_delete || hit.session_index != app->deleting_session_index) {
+        cancel_session_delete(app);
+        return;
+    }
+
+    if (GetTime() - app->delete_hold_started >= 3.0) {
+        remove_session_at(app, app->deleting_session_index);
+        save_profile(app);
+    }
+}
+
+static void update_menu(DemoApp* app) {
+    if (app->sessions_open && app->profile.session_count > max_visible_session_rows) {
+        const float wheel = GetMouseWheelMove();
+        if (wheel > 0.0f) app->session_scroll--;
+        if (wheel < 0.0f) app->session_scroll++;
+        clamp_session_scroll(app);
+    }
+
+    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+        const MenuHit hit = demo_menu_hit_test(
+            app->color_picker_open,
+            app->sessions_open,
+            app->session_scroll,
+            app->profile.session_count,
+            GetMousePosition());
+        app->dragged_menu_control = menu_control_none;
+
+        if (hit.control == menu_control_player) {
+            app->active_menu_field = menu_input_player;
+            app->sessions_open = false;
+        } else if (hit.control == menu_control_session) {
+            app->active_menu_field = menu_input_session;
+        } else if (hit.control == menu_control_session_dropdown) {
+            app->sessions_open = !app->sessions_open;
+            app->color_picker_open = false;
+            clamp_session_scroll(app);
+        } else if (hit.control == menu_control_session_item && hit.session_index >= 0) {
+            copy_text(app->session_name, sizeof(app->session_name), app->profile.sessions[static_cast<u32>(hit.session_index)].name);
+            copy_text(app->profile.session_name, sizeof(app->profile.session_name), app->session_name);
+            app->active_menu_field = menu_input_session;
+            app->sessions_open = false;
+            mark_profile_dirty(app);
+        } else if (hit.control == menu_control_session_delete && hit.session_index >= 0) {
+            app->delete_hold_active = true;
+            app->delete_hold_started = GetTime();
+            app->deleting_session_index = hit.session_index;
+        } else if (hit.control == menu_control_color) {
+            app->color_picker_open = !app->color_picker_open;
+            app->sessions_open = false;
+        } else if (hit.control == menu_control_host) {
+            host_game(app);
+            return;
+        } else if (hit.control == menu_control_join) {
+            join_game(app);
+            return;
+        } else if (hit.control == menu_control_color_r || hit.control == menu_control_color_g || hit.control == menu_control_color_b) {
+            app->dragged_menu_control = hit.control;
+            set_player_color_component(app, hit.control, demo_menu_color_value_from_mouse(hit.control, GetMousePosition()));
+            mark_profile_dirty(app);
+        } else {
+            app->active_menu_field = menu_input_none;
+            if (app->color_picker_open) app->color_picker_open = false;
+            if (app->sessions_open) app->sessions_open = false;
+        }
+    }
+
+    if (IsMouseButtonDown(MOUSE_LEFT_BUTTON) &&
+        (app->dragged_menu_control == menu_control_color_r ||
+         app->dragged_menu_control == menu_control_color_g ||
+         app->dragged_menu_control == menu_control_color_b)) {
+        set_player_color_component(app, app->dragged_menu_control, demo_menu_color_value_from_mouse(app->dragged_menu_control, GetMousePosition()));
+        mark_profile_dirty(app);
+    }
+    if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
+        app->dragged_menu_control = menu_control_none;
+        if (app->delete_hold_active) cancel_session_delete(app);
+    }
+
+    update_session_delete_hold(app);
+
+    if (IsKeyPressed(KEY_TAB)) {
+        app->active_menu_field = app->active_menu_field == menu_input_player ? menu_input_session : menu_input_player;
+        app->sessions_open = false;
+    }
+
+    size_t cap = 0;
+    char* text = active_menu_text(app, &cap);
     int c = GetCharPressed();
+    bool text_changed = false;
     while (c) {
-        const bool shortcut_char =
-            (color_pressed && (c == 'c' || c == 'C')) ||
-            (host_pressed && (c == 'h' || c == 'H')) ||
-            (join_pressed && (c == 'j' || c == 'J'));
-        if (!shortcut_char) {
-            add_text_char(app->player_name, sizeof(app->player_name), c);
+        if (text) {
+            add_text_char(text, cap, c);
+            text_changed = true;
         }
         c = GetCharPressed();
     }
-    if (IsKeyPressed(KEY_BACKSPACE)) {
-        const size_t len = std::strlen(app->player_name);
-        if (len > 0) app->player_name[len - 1] = 0;
+    if (text && IsKeyPressed(KEY_BACKSPACE)) {
+        remove_text_char(text);
+        text_changed = true;
     }
-    if (color_pressed) {
-        static const Color colors[] = {
-            {90, 180, 255, 255}, {255, 120, 110, 255}, {120, 220, 150, 255},
-            {255, 214, 100, 255}, {205, 145, 255, 255}
-        };
-        static u32 color_idx = 0;
-        color_idx = (color_idx + 1) % (sizeof(colors) / sizeof(colors[0]));
-        app->player_color = colors[color_idx];
-    }
-    if (host_pressed) {
-        net_host(&app->net, app->session_name);
-        demo_generate_world(app);
-        app->in_game = true;
-        app->mouse_captured = true;
-        DisableCursor();
-    }
-    if (join_pressed) {
-        net_join_from_clipboard(&app->net);
-        demo_generate_world(app);
-        app->in_game = true;
-        app->mouse_captured = true;
-        DisableCursor();
+    if (text_changed) {
+        copy_text(app->profile.player_name, sizeof(app->profile.player_name), app->player_name);
+        copy_text(app->profile.session_name, sizeof(app->profile.session_name), app->session_name);
+        app->profile.player_color = app->player_color;
+        app->sessions_open = false;
+        mark_profile_dirty(app);
     }
 }
 
@@ -356,11 +896,6 @@ static PlayerEntity* local_player(DemoApp* app, Dimension* dim) {
 }
 
 static void collect_input(DemoApp* app, PlayerEntity* player) {
-    if (IsKeyPressed(KEY_ESCAPE)) {
-        app->mouse_captured = !app->mouse_captured;
-        if (app->mouse_captured) DisableCursor();
-        else EnableCursor();
-    }
     if (!app->mouse_captured && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
         app->mouse_captured = true;
         DisableCursor();
@@ -420,6 +955,81 @@ static NetPlayerState make_net_player_state(DemoApp* app, Dimension* dim, const 
     return state;
 }
 
+static SavedPlayerState saved_state_from_net(const NetPlayerState& state) {
+    SavedPlayerState saved{};
+    saved.valid = true;
+    saved.peer_id = state.peer_id;
+    copy_text(saved.name, sizeof(saved.name), state.name);
+    saved.color = state.color;
+    saved.chunk = state.chunk;
+    saved.local = state.local;
+    saved.yaw = state.yaw;
+    saved.pitch = state.pitch;
+    saved.body_radius = state.body_radius;
+    saved.current_height = state.current_height;
+    return saved;
+}
+
+static NetPlayerState net_state_from_saved(const SavedPlayerState& saved, u32 dimension_id) {
+    NetPlayerState state{};
+    state.peer_id = saved.peer_id;
+    state.dimension_id = dimension_id;
+    state.chunk = saved.chunk;
+    state.local = saved.local;
+    state.yaw = saved.yaw;
+    state.pitch = saved.pitch;
+    state.body_radius = saved.body_radius;
+    state.current_height = saved.current_height;
+    state.color = saved.color;
+    copy_text(state.name, sizeof(state.name), saved.name);
+    return state;
+}
+
+static void apply_net_player_state_to_local(DemoApp* app, Dimension* dim, PlayerEntity* player, const NetPlayerState& state) {
+    SavedPlayerState saved = saved_state_from_net(state);
+    saved.valid = true;
+    saved.peer_id = local_player_peer_id(app);
+    apply_saved_player_state(dim, app->dimension_id, player, saved, false);
+}
+
+static void record_current_world_state(DemoApp* app) {
+    copy_text(app->profile.player_name, sizeof(app->profile.player_name), app->player_name);
+    copy_text(app->profile.session_name, sizeof(app->profile.session_name), app->session_name);
+    app->profile.player_color = app->player_color;
+
+    if (!app->in_game) return;
+
+    Dimension* dim = world_get_dimension(&app->world, app->dimension_id);
+    PlayerEntity* player = local_player(app, dim);
+    if (!dim || !player) return;
+
+    SavedSessionState* session = upsert_session(&app->profile, app->session_name);
+    if (!session) return;
+
+    NetPlayerState local = make_net_player_state(app, dim, player);
+    local.peer_id = local_player_peer_id(app);
+    upsert_player_state(session, saved_state_from_net(local));
+
+    for (u32 slot = 0; slot < max_players; ++slot) {
+        const u64 peer_id = app->remote_peer_ids[slot];
+        const u32 player_id = app->remote_player_ids[slot];
+        if (!peer_id || !id_valid(player_id)) continue;
+        const PlayerEntity* remote = arena_get(&dim->players, player_id);
+        if (!remote) continue;
+        NetPlayerState remote_state = make_net_player_state(app, dim, remote);
+        remote_state.peer_id = peer_id;
+        upsert_player_state(session, saved_state_from_net(remote_state));
+    }
+
+    mark_profile_dirty(app);
+}
+
+static void autosave_profile_if_needed(DemoApp* app) {
+    if (!app->profile_dirty) return;
+    if (GetTime() - app->last_profile_save_time < 2.0) return;
+    save_profile(app);
+}
+
 static u32 find_remote_slot(DemoApp* app, u64 peer_id) {
     for (u32 i = 0; i < max_players; ++i) {
         if (app->remote_peer_ids[i] == peer_id) return i;
@@ -439,6 +1049,38 @@ static u32 acquire_remote_slot(DemoApp* app, u64 peer_id) {
         }
     }
     return invalid_id;
+}
+
+static bool restore_already_sent(const DemoApp* app, u64 peer_id) {
+    for (u64 sent : app->restore_sent_peer_ids) {
+        if (sent == peer_id) return true;
+    }
+    return false;
+}
+
+static void remember_restore_sent(DemoApp* app, u64 peer_id) {
+    if (!peer_id || restore_already_sent(app, peer_id)) return;
+    for (u64& sent : app->restore_sent_peer_ids) {
+        if (sent == 0) {
+            sent = peer_id;
+            return;
+        }
+    }
+}
+
+static void forget_restore_sent(DemoApp* app, u64 peer_id) {
+    for (u64& sent : app->restore_sent_peer_ids) {
+        if (sent == peer_id) sent = 0;
+    }
+}
+
+static void send_saved_restore_if_needed(DemoApp* app, u64 peer_id) {
+    if (!app->net.lobby_owner || !peer_id || restore_already_sent(app, peer_id)) return;
+    const SavedPlayerState* saved = find_current_session_player_state(app, peer_id);
+    if (!saved) return;
+
+    net_send_player_restore(&app->net, peer_id, net_state_from_saved(*saved, app->dimension_id));
+    remember_restore_sent(app, peer_id);
 }
 
 static bool net_peer_present(const NetSession* net, u64 peer_id) {
@@ -501,6 +1143,7 @@ static void sync_remote_players(DemoApp* app, Dimension* dim) {
         if (id_valid(app->remote_player_ids[slot])) {
             remove_remote_player(dim, app->remote_player_ids[slot]);
         }
+        forget_restore_sent(app, peer_id);
         app->remote_peer_ids[slot] = 0;
         app->remote_player_ids[slot] = invalid_id;
     }
@@ -519,9 +1162,16 @@ static void sync_remote_players(DemoApp* app, Dimension* dim) {
         feet.local = state.local;
         canonicalize(&feet, dim->chunk_size_m);
 
+        const SavedPlayerState* saved = find_current_session_player_state(app, state.peer_id);
+        WorldPos spawn_feet = feet;
+        if (saved && !restore_already_sent(app, state.peer_id)) {
+            spawn_feet = saved_player_feet_pos(app->dimension_id, *saved);
+            canonicalize(&spawn_feet, dim->chunk_size_m);
+        }
+
         if (!id_valid(app->remote_player_ids[slot])) {
             const char* name = state.name[0] ? state.name : "peer";
-            app->remote_player_ids[slot] = dimension_add_player(dim, name, state.color, feet, false);
+            app->remote_player_ids[slot] = dimension_add_player(dim, name, state.color, spawn_feet, false);
         }
 
         PlayerEntity* remote = arena_get(&dim->players, app->remote_player_ids[slot]);
@@ -537,7 +1187,139 @@ static void sync_remote_players(DemoApp* app, Dimension* dim) {
         remote->connected = true;
         remote->local = false;
         player_sync_masses_to_pose(dim, remote, feet);
+
+        if (saved && !restore_already_sent(app, state.peer_id)) {
+            apply_saved_player_state(dim, app->dimension_id, remote, *saved, true);
+        }
+        send_saved_restore_if_needed(app, state.peer_id);
     }
+}
+
+static bool only_local_player(const DemoApp* app) {
+    return app->net.peer_count == 0;
+}
+
+static void pause_game(DemoApp* app) {
+    app->paused = true;
+    app->mouse_captured = false;
+    app->input = {};
+    app->dragged_pause_control = pause_control_none;
+    EnableCursor();
+}
+
+static void resume_game(DemoApp* app) {
+    app->paused = false;
+    app->mouse_captured = true;
+    app->input = {};
+    app->dragged_pause_control = pause_control_none;
+    DisableCursor();
+}
+
+static void exit_to_first_menu(DemoApp* app) {
+    net_leave(&app->net);
+    reset_remote_players(app);
+    app->in_game = false;
+    app->paused = false;
+    app->mouse_captured = false;
+    app->input = {};
+    app->fixed_accum = 0.0f;
+    app->dragged_pause_control = pause_control_none;
+    app->dragged_menu_control = menu_control_none;
+    app->active_menu_field = menu_input_player;
+    EnableCursor();
+}
+
+static CameraView make_player_camera_view(DemoApp* app, Dimension* dim, const PlayerEntity* player) {
+    CameraView view{};
+    view.anchor = player_feet_pos(dim, player);
+    view.eye_height = player->eye_height + player->camera_y_offset;
+    view.yaw = player->yaw;
+    view.pitch = player->pitch;
+    return view;
+}
+
+static void draw_game_scene(DemoApp* app, Dimension* dim, PlayerEntity* player, bool allow_copy_view, bool present_to_screen) {
+    CameraView view = make_player_camera_view(app, dim, player);
+    if (allow_copy_view && IsKeyPressed(KEY_O)) copy_current_view_to_clipboard(dim, view);
+    renderer_ensure_target(&app->renderer);
+    if (present_to_screen) {
+        renderer_draw_dimension(&app->renderer, dim, view, app->local_player_id);
+    } else {
+        renderer_render_dimension_to_target(&app->renderer, dim, view, app->local_player_id);
+    }
+}
+
+static void draw_pause(DemoApp* app, Dimension* dim, PlayerEntity* player) {
+    draw_game_scene(app, dim, player, false, false);
+    demo_draw_pause_overlay_screen(PauseScreen{
+        &app->renderer,
+        static_cast<int>(floorf(app->renderer.fov + 0.5f)),
+        app->renderer.scale_power
+    });
+}
+
+static void update_pause_menu(DemoApp* app) {
+    if (IsKeyPressed(KEY_ESCAPE)) {
+        resume_game(app);
+        return;
+    }
+
+    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+        const PauseHit hit = demo_pause_hit_test(GetMousePosition());
+        app->dragged_pause_control = pause_control_none;
+        if (hit.control == pause_control_continue) {
+            resume_game(app);
+            return;
+        }
+        if (hit.control == pause_control_first_menu) {
+            exit_to_first_menu(app);
+            return;
+        }
+        if (hit.control == pause_control_fov || hit.control == pause_control_scale) {
+            app->dragged_pause_control = hit.control;
+        }
+    }
+
+    if (IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
+        if (app->dragged_pause_control == pause_control_fov) {
+            const int fov = demo_pause_value_from_mouse(pause_control_fov, GetMousePosition());
+            if (static_cast<int>(floorf(app->renderer.fov + 0.5f)) != fov) {
+                app->renderer.fov = static_cast<float>(fov);
+                mark_profile_dirty(app);
+            }
+        } else if (app->dragged_pause_control == pause_control_scale) {
+            const int scale_power = demo_pause_value_from_mouse(pause_control_scale, GetMousePosition());
+            if (app->renderer.scale_power != scale_power) {
+                app->renderer.scale_power = scale_power;
+                mark_profile_dirty(app);
+            }
+        }
+    }
+
+    if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
+        app->dragged_pause_control = pause_control_none;
+    }
+}
+
+static void tick_game_simulation(DemoApp* app, Dimension* dim, float frame_time) {
+    app->fixed_accum += fminf(frame_time, 0.1f);
+    constexpr float fixed_dt = 1.0f / 60.0f;
+    while (app->fixed_accum >= fixed_dt) {
+        fixed_update(app, dim, fixed_dt);
+        app->fixed_accum -= fixed_dt;
+    }
+}
+
+static void update_network_state(DemoApp* app, Dimension* dim, PlayerEntity* player) {
+    net_set_local_player(&app->net, make_net_player_state(app, dim, player));
+    net_update(&app->net);
+    NetPlayerState restore{};
+    if (net_take_player_restore(&app->net, &restore)) {
+        apply_net_player_state_to_local(app, dim, player, restore);
+    }
+    sync_remote_players(app, dim);
+    record_current_world_state(app);
+    autosave_profile_if_needed(app);
 }
 
 static void update_game(DemoApp* app) {
@@ -545,39 +1327,60 @@ static void update_game(DemoApp* app) {
     PlayerEntity* player = local_player(app, dim);
     if (!dim || !player) return;
 
-    if (IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD)) renderer_change_scale(&app->renderer, 1);
-    if (IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_KP_SUBTRACT)) renderer_change_scale(&app->renderer, -1);
+    if (!app->paused && IsKeyPressed(KEY_ESCAPE)) {
+        pause_game(app);
+        if (only_local_player(app)) {
+            app->fixed_accum = 0.0f;
+        } else {
+            tick_game_simulation(app, dim, GetFrameTime());
+        }
+        update_network_state(app, dim, player);
+        draw_pause(app, dim, player);
+        return;
+    } else if (app->paused) {
+        update_pause_menu(app);
+        if (!app->in_game) return;
+
+        app->input = {};
+        if (app->paused) {
+            if (only_local_player(app)) {
+                app->fixed_accum = 0.0f;
+            } else {
+                tick_game_simulation(app, dim, GetFrameTime());
+            }
+            update_network_state(app, dim, player);
+            draw_pause(app, dim, player);
+            return;
+        }
+    }
+
+    if (IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD)) {
+        const int before = app->renderer.scale_power;
+        renderer_change_scale(&app->renderer, 1);
+        if (app->renderer.scale_power != before) mark_profile_dirty(app);
+    }
+    if (IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_KP_SUBTRACT)) {
+        const int before = app->renderer.scale_power;
+        renderer_change_scale(&app->renderer, -1);
+        if (app->renderer.scale_power != before) mark_profile_dirty(app);
+    }
     if (IsKeyPressed(KEY_F3)) app->renderer.draw_physics_debug = !app->renderer.draw_physics_debug;
     if (IsKeyPressed(KEY_C) && app->net.in_lobby) net_copy_lobby_to_clipboard(&app->net);
 
     collect_input(app, player);
+    tick_game_simulation(app, dim, GetFrameTime());
+    update_network_state(app, dim, player);
 
-    app->fixed_accum += fminf(GetFrameTime(), 0.1f);
-    constexpr float fixed_dt = 1.0f / 60.0f;
-    while (app->fixed_accum >= fixed_dt) {
-        fixed_update(app, dim, fixed_dt);
-        app->fixed_accum -= fixed_dt;
-    }
-
-    net_set_local_player(&app->net, make_net_player_state(app, dim, player));
-    net_update(&app->net);
-    sync_remote_players(app, dim);
-
-    CameraView view{};
-    view.anchor = player_feet_pos(dim, player);
-    view.eye_height = player->eye_height + player->camera_y_offset;
-    view.yaw = player->yaw;
-    view.pitch = player->pitch;
-    if (IsKeyPressed(KEY_O)) copy_current_view_to_clipboard(dim, view);
-    renderer_ensure_target(&app->renderer);
-    renderer_draw_dimension(&app->renderer, dim, view, app->local_player_id);
+    draw_game_scene(app, dim, player, true, true);
 }
 
 bool demo_update_and_draw(DemoApp* app) {
     if (WindowShouldClose()) return false;
+    if (!app->in_game && IsKeyPressed(KEY_ESCAPE)) return false;
     if (!app->in_game) {
         update_menu(app);
-        demo_draw_menu(app);
+        autosave_profile_if_needed(app);
+        if (!app->in_game) demo_draw_menu(app);
     } else {
         update_game(app);
     }

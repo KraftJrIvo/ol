@@ -167,6 +167,7 @@ static void steam_finish_lobby_enter(NetSession* net, CSteamID lobby, bool creat
 
 void SteamNetCallbacks::OnLobbyCreated(LobbyCreated_t* res, bool io_failure) {
     if (!net) return;
+    if (!net->pending) return;
     net->pending = false;
     if (io_failure || !res || res->m_eResult != k_EResultOK) {
         net->mode = net_offline;
@@ -181,6 +182,7 @@ void SteamNetCallbacks::OnLobbyCreated(LobbyCreated_t* res, bool io_failure) {
 
 void SteamNetCallbacks::OnLobbyEnter(LobbyEnter_t* res, bool io_failure) {
     if (!net) return;
+    if (!net->pending) return;
     net->pending = false;
     if (io_failure || !res || res->m_EChatRoomEnterResponse != k_EChatRoomEnterResponseSuccess) {
         net->mode = net_offline;
@@ -272,6 +274,10 @@ static void steam_receive(NetSession* net) {
                     net->remote_players[peer_idx] = packet.player;
                     net->remote_player_valid[peer_idx] = true;
                 }
+            } else if (packet.type == net_packet_restore_player) {
+                net->restore_player = packet.player;
+                net->restore_player.peer_id = net->local_peer_id;
+                net->restore_player_valid = true;
             }
         }
 
@@ -415,6 +421,36 @@ void net_join_from_clipboard(NetSession* net) {
 #endif
 }
 
+void net_leave(NetSession* net) {
+#ifdef OL_USE_STEAMWORKS
+    if (net->steam_available) {
+        if (net->in_lobby && SteamMatchmaking()) {
+            SteamMatchmaking()->LeaveLobby(steam_lobby_id(net));
+        }
+        if (SteamNetworkingMessages()) {
+            for (u32 i = 0; i < net->peer_count; ++i) {
+                SteamNetworkingIdentity peer_identity{};
+                peer_identity.SetSteamID64(net->peer_ids[i]);
+                SteamNetworkingMessages()->CloseSessionWithUser(peer_identity);
+            }
+        }
+        if (steam_state(net)) {
+            steam_state(net)->lobby_metadata_published = false;
+            steam_state(net)->member_metadata_published = false;
+        }
+    }
+#endif
+    net_clear_peers(net);
+    net->mode = net_offline;
+    net->in_lobby = false;
+    net->lobby_owner = false;
+    net->pending = false;
+    net->lobby_id = 0;
+    net->local_player_valid = false;
+    net->restore_player_valid = false;
+    net_status(net, net->steam_available ? "Left session" : "Offline build; Steamworks disabled");
+}
+
 void net_copy_lobby_to_clipboard(NetSession* net) {
     if (!net->lobby_id) {
         net_status(net, "No lobby id to copy");
@@ -430,6 +466,39 @@ void net_set_local_player(NetSession* net, const NetPlayerState& player) {
     net->local_player = player;
     net->local_player.peer_id = net->local_peer_id;
     net->local_player_valid = true;
+}
+
+void net_send_player_restore(NetSession* net, u64 peer_id, const NetPlayerState& player) {
+#ifdef OL_USE_STEAMWORKS
+    if (!net->steam_available || !net->in_lobby || !SteamNetworkingMessages() || !peer_id) return;
+
+    NetPlayerStatePacket packet{};
+    packet.type = net_packet_restore_player;
+    packet.player = player;
+    packet.player.peer_id = peer_id;
+
+    SteamNetworkingIdentity peer_identity{};
+    peer_identity.SetSteamID64(peer_id);
+    SteamNetworkingMessages()->SendMessageToUser(
+        peer_identity,
+        &packet,
+        sizeof(packet),
+        k_nSteamNetworkingSend_Reliable,
+        0
+    );
+#else
+    (void)net;
+    (void)peer_id;
+    (void)player;
+#endif
+}
+
+bool net_take_player_restore(NetSession* net, NetPlayerState* out_player) {
+    if (!net->restore_player_valid) return false;
+    if (out_player) *out_player = net->restore_player;
+    net->restore_player = NetPlayerState{};
+    net->restore_player_valid = false;
+    return true;
 }
 
 void net_update(NetSession* net) {

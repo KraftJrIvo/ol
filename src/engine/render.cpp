@@ -20,6 +20,8 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <limits>
 #include <vector>
 
 namespace ol {
@@ -43,11 +45,14 @@ void renderer_init(RenderState* renderer) {
         ".ttf",
         res_RuffCut_Regular_ttf,
         static_cast<int>(res_RuffCut_Regular_ttf_len),
-        48,
+        96,
         nullptr,
         0
     );
     renderer->font_ready = IsFontValid(renderer->font);
+    if (renderer->font_ready) {
+        SetTextureFilter(renderer->font.texture, TEXTURE_FILTER_BILINEAR);
+    }
 }
 
 void renderer_shutdown(RenderState* renderer) {
@@ -100,6 +105,15 @@ void renderer_ensure_target(RenderState* renderer) {
     renderer->window_h = win_h;
 }
 
+void renderer_draw_target_to_screen(RenderState* renderer) {
+    if (!renderer || !renderer->target_ready) return;
+
+    ClearBackground(BLACK);
+    Rectangle src = {0.0f, 0.0f, static_cast<float>(renderer->target.texture.width), -static_cast<float>(renderer->target.texture.height)};
+    Rectangle dst = {0.0f, 0.0f, static_cast<float>(renderer->window_w), static_cast<float>(renderer->window_h)};
+    DrawTexturePro(renderer->target.texture, src, dst, {0.0f, 0.0f}, 0.0f, WHITE);
+}
+
 static bool chunk_visible(const Dimension* dim, ChunkCoord camera, ChunkCoord chunk, float* out_dist) {
     const float dx = static_cast<float>(chunk.x - camera.x);
     const float dy = static_cast<float>(chunk.y - camera.y);
@@ -132,6 +146,13 @@ static void draw_engine_text(RenderState* renderer, const char* text, Vector2 po
     } else {
         DrawText(text, static_cast<int>(pos.x), static_cast<int>(pos.y), static_cast<int>(size), color);
     }
+}
+
+static Vector2 measure_engine_text(RenderState* renderer, const char* text, float size) {
+    if (renderer->font_ready) {
+        return MeasureTextEx(renderer->font, text, size, 1.0f);
+    }
+    return {static_cast<float>(MeasureText(text, static_cast<int>(size))), size};
 }
 
 static float face_light(Dimension* dim, const CameraView& view, Vector3 face_center, Vector3 normal) {
@@ -585,7 +606,95 @@ static void push_player_cylinder_triangles(SceneTriangleList* scene_triangles, V
     }
 }
 
-static void draw_players(RenderState* renderer, Dimension* dim, const CameraView& view, u32 local_player_id, const Camera3D& camera, const Matrix& view_matrix, const Matrix& projection_matrix, ScreenEdgeList* edge_list, SceneTriangleList* scene_triangles) {
+struct PlayerNameTag {
+    bool visible = false;
+    char name[32]{};
+    Vector3 pos{};
+    Vector2 screen{};
+    Vector2 size_px{};
+};
+
+static Vector2 native_mouse_position(const RenderState* renderer) {
+    const Vector2 mouse = GetMousePosition();
+    const float sx = renderer->window_w > 0 ? static_cast<float>(renderer->native_w) / static_cast<float>(renderer->window_w) : 1.0f;
+    const float sy = renderer->window_h > 0 ? static_cast<float>(renderer->native_h) / static_cast<float>(renderer->window_h) : 1.0f;
+    return {mouse.x * sx, mouse.y * sy};
+}
+
+static bool ray_hits_vertical_cylinder(Ray ray, Vector3 bottom, Vector3 top, float radius, float* out_t) {
+    const float min_y = fminf(bottom.y, top.y);
+    const float max_y = fmaxf(bottom.y, top.y);
+    const float ox = ray.position.x - bottom.x;
+    const float oz = ray.position.z - bottom.z;
+    const float dx = ray.direction.x;
+    const float dz = ray.direction.z;
+    const float radius_sq = radius * radius;
+
+    float best_t = std::numeric_limits<float>::max();
+    const float a = dx * dx + dz * dz;
+    const float b = 2.0f * (ox * dx + oz * dz);
+    const float c = ox * ox + oz * oz - radius_sq;
+    if (a > 0.000001f) {
+        const float disc = b * b - 4.0f * a * c;
+        if (disc >= 0.0f) {
+            const float root = std::sqrt(disc);
+            const float inv = 0.5f / a;
+            const float candidates[2] = {(-b - root) * inv, (-b + root) * inv};
+            for (float t : candidates) {
+                const float y = ray.position.y + ray.direction.y * t;
+                if (t >= 0.0f && y >= min_y && y <= max_y && t < best_t) best_t = t;
+            }
+        }
+    }
+
+    if (std::fabs(ray.direction.y) > 0.000001f) {
+        const float cap_y[2] = {min_y, max_y};
+        for (float y_plane : cap_y) {
+            const float t = (y_plane - ray.position.y) / ray.direction.y;
+            const float x = ray.position.x + ray.direction.x * t - bottom.x;
+            const float z = ray.position.z + ray.direction.z * t - bottom.z;
+            if (t >= 0.0f && x * x + z * z <= radius_sq && t < best_t) best_t = t;
+        }
+    }
+
+    if (best_t == std::numeric_limits<float>::max()) return false;
+    if (out_t) *out_t = best_t;
+    return true;
+}
+
+static void draw_name_tag_billboard(RenderState* renderer, const Camera3D& camera, PlayerNameTag* tag) {
+    if (!tag || !tag->visible || !renderer->white_ready) return;
+
+    constexpr float text_size = 18.0f;
+    const Vector2 text = measure_engine_text(renderer, tag->name, text_size);
+    tag->size_px = {text.x + 22.0f, text.y + 12.0f};
+    tag->screen = GetWorldToScreenEx(tag->pos, camera, renderer->native_w, renderer->native_h);
+
+    const Vector3 forward = safe_norm(camera.target - camera.position, {0.0f, 0.0f, -1.0f});
+    const float dist = Vector3DotProduct(tag->pos - camera.position, forward);
+    if (dist <= 0.01f) {
+        tag->visible = false;
+        return;
+    }
+
+    const float world_per_pixel = 2.0f * dist * std::tan(camera.fovy * DEG2RAD * 0.5f) / static_cast<float>(renderer->native_h);
+    const Vector2 world_size = {tag->size_px.x * world_per_pixel, tag->size_px.y * world_per_pixel};
+    Rectangle source = {0.0f, 0.0f, 1.0f, 1.0f};
+    DrawBillboardPro(camera, renderer->white_texture, source, tag->pos, camera.up, world_size, world_size * 0.5f, 0.0f, Color{0, 0, 0, 205});
+}
+
+static void draw_name_tag_text(RenderState* renderer, const PlayerNameTag& tag) {
+    if (!tag.visible) return;
+    constexpr float text_size = 18.0f;
+    const Vector2 text = measure_engine_text(renderer, tag.name, text_size);
+    const Vector2 pos = {tag.screen.x - text.x * 0.5f, tag.screen.y - text.y * 0.5f - 1.0f};
+    draw_engine_text(renderer, tag.name, pos, text_size, WHITE);
+}
+
+static void draw_players(RenderState* renderer, Dimension* dim, const CameraView& view, u32 local_player_id, const Camera3D& camera, const Matrix& view_matrix, const Matrix& projection_matrix, ScreenEdgeList* edge_list, SceneTriangleList* scene_triangles, PlayerNameTag* hovered_tag) {
+    const Ray hover_ray = GetScreenToWorldRayEx(native_mouse_position(renderer), camera, renderer->native_w, renderer->native_h);
+    float closest_hover_t = std::numeric_limits<float>::max();
+
     for (u32 slot = 0; slot < dim->players.count; ++slot) {
         const u32 player_id = arena_id_at_slot(&dim->players, slot);
         const PlayerEntity* player = &dim->players.data[slot];
@@ -602,7 +711,19 @@ static void draw_players(RenderState* renderer, Dimension* dim, const CameraView
         push_player_cylinder_triangles(scene_triangles, bottom, top, radius);
         push_player_ring_edges(renderer, camera, view_matrix, projection_matrix, edge_list, bottom, radius, BLACK);
         push_player_ring_edges(renderer, camera, view_matrix, projection_matrix, edge_list, top, radius, BLACK);
+
+        float hover_t = 0.0f;
+        if (ray_hits_vertical_cylinder(hover_ray, bottom, top, radius, &hover_t) && hover_t < closest_hover_t) {
+            closest_hover_t = hover_t;
+            if (hovered_tag) {
+                hovered_tag->visible = true;
+                std::snprintf(hovered_tag->name, sizeof(hovered_tag->name), "%s", player->name[0] ? player->name : "player");
+                hovered_tag->pos = top + Vector3{0.0f, 0.30f, 0.0f};
+            }
+        }
     }
+
+    draw_name_tag_billboard(renderer, camera, hovered_tag);
 }
 
 static void draw_physics(RenderState* renderer, Dimension* dim, const CameraView& view) {
@@ -624,7 +745,7 @@ static void draw_physics(RenderState* renderer, Dimension* dim, const CameraView
     }
 }
 
-void renderer_draw_dimension(RenderState* renderer, Dimension* dim, const CameraView& view, u32 local_player_id) {
+void renderer_render_dimension_to_target(RenderState* renderer, Dimension* dim, const CameraView& view, u32 local_player_id) {
     if (!renderer->target_ready) renderer_ensure_target(renderer);
 
     Camera3D camera{};
@@ -659,24 +780,26 @@ void renderer_draw_dimension(RenderState* renderer, Dimension* dim, const Camera
         draw_sprites(renderer, dim, view, chunk);
     }
 
-    draw_players(renderer, dim, view, local_player_id, camera, view_matrix, projection_matrix, &edge_list, &scene_triangles);
+    PlayerNameTag hovered_tag{};
+    draw_players(renderer, dim, view, local_player_id, camera, view_matrix, projection_matrix, &edge_list, &scene_triangles, &hovered_tag);
     draw_physics(renderer, dim, view);
 
     EndMode3D();
 
     if (renderer->depth_test_edges) draw_depth_cut_screen_edges(renderer, &edge_list, scene_triangles, camera.position);
     else draw_flat_screen_edges(&edge_list);
+    draw_name_tag_text(renderer, hovered_tag);
 
-    char overlay[96]{};
-    std::snprintf(overlay, sizeof(overlay), "scale 1/%d | native %dx%d", 1 << renderer->scale_power, renderer->native_w, renderer->native_h);
-    draw_engine_text(renderer, overlay, {10.0f, 10.0f}, 16.0f, Fade(BLACK, 0.72f));
+    //char overlay[96]{};
+    //std::snprintf(overlay, sizeof(overlay), "scale 1/%d | native %dx%d", 1 << renderer->scale_power, renderer->native_w, renderer->native_h);
+    //draw_engine_text(renderer, overlay, {10.0f, 10.0f}, 16.0f, Fade(BLACK, 0.72f));
     EndTextureMode();
+}
 
+void renderer_draw_dimension(RenderState* renderer, Dimension* dim, const CameraView& view, u32 local_player_id) {
+    renderer_render_dimension_to_target(renderer, dim, view, local_player_id);
     BeginDrawing();
-    ClearBackground(BLACK);
-    Rectangle src = {0.0f, 0.0f, static_cast<float>(renderer->target.texture.width), -static_cast<float>(renderer->target.texture.height)};
-    Rectangle dst = {0.0f, 0.0f, static_cast<float>(renderer->window_w), static_cast<float>(renderer->window_h)};
-    DrawTexturePro(renderer->target.texture, src, dst, {0.0f, 0.0f}, 0.0f, WHITE);
+    renderer_draw_target_to_screen(renderer);
     EndDrawing();
 }
 

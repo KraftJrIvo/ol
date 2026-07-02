@@ -34,6 +34,8 @@ void renderer_init(RenderState* renderer);
 void renderer_shutdown(RenderState* renderer);
 void renderer_change_scale(RenderState* renderer, int delta);
 void renderer_ensure_target(RenderState* renderer);
+void renderer_draw_target_to_screen(RenderState* renderer);
+void renderer_render_dimension_to_target(RenderState* renderer, Dimension* dim, const CameraView& view, u32 local_player_id);
 void renderer_draw_dimension(RenderState* renderer, Dimension* dim, const CameraView& view, u32 local_player_id);
 
 } // namespace ol

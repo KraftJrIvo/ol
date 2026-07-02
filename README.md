@@ -28,15 +28,21 @@ cmake -S . -B build -DOL_USE_STEAMWORKS=ON -DSTEAMWORKS_SDK_DIR=C:\sdk\steamwork
 
 ## Demo Controls
 
-- `H`: host/offline-start the generated playground session
-- `J`: join lobby from clipboard when built with Steamworks
+- First menu: edit the player and session fields directly
+- First menu: click the color circle for RGB sliders
+- First menu: click the session arrow for previous sessions
+- First menu: hold a session row `X` for 3 seconds to delete that saved session
+- First menu: use `host` or `join from CB`
+- Player name, player color, pause settings, last session, and per-session player poses are saved in `ol_state.txt`
+- First menu: `Esc` exits the app
 - `WASD`: move
 - `Mouse`: look
 - `Shift`: sprint
 - `Ctrl`: crouch
 - `Space`: jump
 - `+` / `-`: change render scale
-- `Esc`: release/capture mouse
+- `Esc`: pause
+- Pause menu: adjust FOV and render scale, continue, or leave to the first menu
 
 ## Tests
 
