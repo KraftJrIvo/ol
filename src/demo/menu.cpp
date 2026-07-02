@@ -8,7 +8,7 @@ namespace ol {
 namespace {
 
 constexpr float menu_base_w = 900.0f;
-constexpr float menu_base_h = 560.0f;
+constexpr float menu_base_h = 640.0f;
 constexpr float pause_base_w = 760.0f;
 constexpr float pause_base_h = 460.0f;
 
@@ -19,6 +19,9 @@ struct MenuLayout {
     Rectangle session{};
     Rectangle session_arrow{};
     Rectangle session_list{};
+    Rectangle world{};
+    Rectangle world_arrow{};
+    Rectangle world_list{};
     Rectangle host{};
     Rectangle join{};
     Rectangle picker_panel{};
@@ -68,16 +71,19 @@ static MenuLayout make_menu_layout() {
     layout.color_center = scaled_point(layout.origin, layout.scale, {300.0f, 146.0f});
     layout.color_radius = 24.0f * layout.scale;
     layout.player = scaled_rect(layout.origin, layout.scale, {350.0f, 118.0f, 230.0f, 56.0f});
-    layout.session = scaled_rect(layout.origin, layout.scale, {180.0f, 330.0f, 230.0f, 56.0f});
-    layout.session_arrow = scaled_rect(layout.origin, layout.scale, {418.0f, 330.0f, 46.0f, 56.0f});
-    layout.session_list = scaled_rect(layout.origin, layout.scale, {180.0f, 392.0f, 284.0f, 232.0f});
-    layout.host = scaled_rect(layout.origin, layout.scale, {180.0f, 402.0f, 230.0f, 56.0f});
+    layout.session = scaled_rect(layout.origin, layout.scale, {180.0f, 280.0f, 230.0f, 56.0f});
+    layout.session_arrow = scaled_rect(layout.origin, layout.scale, {418.0f, 280.0f, 46.0f, 56.0f});
+    layout.session_list = scaled_rect(layout.origin, layout.scale, {180.0f, 342.0f, 284.0f, 232.0f});
+    layout.world = scaled_rect(layout.origin, layout.scale, {180.0f, 352.0f, 230.0f, 56.0f});
+    layout.world_arrow = scaled_rect(layout.origin, layout.scale, {418.0f, 352.0f, 46.0f, 56.0f});
+    layout.world_list = scaled_rect(layout.origin, layout.scale, {180.0f, 414.0f, 284.0f, 182.0f});
+    layout.host = scaled_rect(layout.origin, layout.scale, {180.0f, 424.0f, 230.0f, 56.0f});
     layout.join = scaled_rect(layout.origin, layout.scale, {545.0f, 365.0f, 235.0f, 56.0f});
     layout.picker_panel = scaled_rect(layout.origin, layout.scale, {245.0f, 190.0f, 400.0f, 150.0f});
     layout.color_slider[0] = scaled_rect(layout.origin, layout.scale, {330.0f, 225.0f, 235.0f, 8.0f});
     layout.color_slider[1] = scaled_rect(layout.origin, layout.scale, {330.0f, 265.0f, 235.0f, 8.0f});
     layout.color_slider[2] = scaled_rect(layout.origin, layout.scale, {330.0f, 305.0f, 235.0f, 8.0f});
-    layout.status_pos = scaled_point(layout.origin, layout.scale, {180.0f, 500.0f});
+    layout.status_pos = scaled_point(layout.origin, layout.scale, {180.0f, 586.0f});
     return layout;
 }
 
@@ -180,6 +186,19 @@ static void draw_text_field(RenderState* renderer, Rectangle rect, const char* v
     draw_ui_text(renderer, text, {rect.x + 18.0f, rect.y + (rect.height - m.y) * 0.5f - 1.0f}, size, color);
 }
 
+static void draw_dropdown_value(RenderState* renderer, Rectangle rect, const char* value, const char* placeholder, bool hot) {
+    DrawRectangleRounded(rect, 0.18f, 10, BLACK);
+    const Color border = hot ? Color{220, 225, 232, 255} : Color{185, 190, 198, 255};
+    DrawRectangleRoundedLinesEx(rect, 0.18f, 10, 3.0f, border);
+
+    const bool has_value = value && value[0];
+    const char* text = has_value ? value : placeholder;
+    const Color color = has_value ? WHITE : Color{135, 142, 152, 255};
+    const float size = fit_text_size(renderer, text, rect.height * 0.53f, rect.width - 32.0f);
+    const Vector2 m = measure_ui_text(renderer, text, size);
+    draw_ui_text(renderer, text, {rect.x + 18.0f, rect.y + (rect.height - m.y) * 0.5f - 1.0f}, size, color);
+}
+
 static void draw_slider(RenderState* renderer, Rectangle track, const char* label, int value, int min_value, int max_value, Color accent) {
     const float label_size = 24.0f * (track.height / 8.0f);
     char text[48]{};
@@ -236,6 +255,17 @@ static Rectangle session_row_rect(const MenuLayout& layout, int visible_index) {
         layout.session_list.x + pad,
         layout.session_list.y + pad + static_cast<float>(visible_index) * row_h,
         layout.session_list.width - pad * 2.0f,
+        row_h - 4.0f * layout.scale
+    };
+}
+
+static Rectangle world_row_rect(const MenuLayout& layout, int visible_index) {
+    const float pad = 6.0f * layout.scale;
+    const float row_h = 42.0f * layout.scale;
+    return {
+        layout.world_list.x + pad,
+        layout.world_list.y + pad + static_cast<float>(visible_index) * row_h,
+        layout.world_list.width - pad * 2.0f,
         row_h - 4.0f * layout.scale
     };
 }
@@ -297,6 +327,28 @@ static void draw_session_dropdown(const MenuScreen& menu, const MenuLayout& layo
     }
 }
 
+static void draw_world_dropdown(const MenuScreen& menu, const MenuLayout& layout) {
+    if (!menu.worlds_open) return;
+
+    DrawRectangleRounded(layout.world_list, 0.06f, 8, Color{5, 6, 8, 246});
+    DrawRectangleRoundedLinesEx(layout.world_list, 0.06f, 8, 2.0f, WHITE);
+
+    const u32 visible = static_cast<u32>(fminf(
+        static_cast<float>(max_visible_world_rows),
+        static_cast<float>(menu.world_count)));
+    const Vector2 mouse = GetMousePosition();
+    for (u32 i = 0; i < visible; ++i) {
+        Rectangle row = world_row_rect(layout, static_cast<int>(i));
+        const bool hot = point_in_rect(mouse, row);
+        DrawRectangleRounded(row, 0.08f, 6, hot ? Color{24, 28, 34, 255} : Color{10, 12, 15, 255});
+
+        const char* name = (menu.world_names && menu.world_names[i]) ? menu.world_names[i] : "";
+        const float size = fit_text_size(menu.renderer, name, 22.0f * layout.scale, row.width - 24.0f * layout.scale);
+        const Vector2 m = measure_ui_text(menu.renderer, name, size);
+        draw_ui_text(menu.renderer, name, {row.x + 12.0f * layout.scale, row.y + (row.height - m.y) * 0.5f - 1.0f}, size, WHITE);
+    }
+}
+
 static Rectangle slider_hit_rect(Rectangle track) {
     return {track.x - 14.0f, track.y - 18.0f, track.width + 28.0f, track.height + 36.0f};
 }
@@ -319,6 +371,8 @@ void demo_draw_menu_contents(const MenuScreen& menu) {
     draw_text_field(menu.renderer, layout.player, menu.player_name, "player", menu.active_field == menu_input_player, point_in_rect(mouse, layout.player));
     draw_text_field(menu.renderer, layout.session, menu.session_name, "session", menu.active_field == menu_input_session, point_in_rect(mouse, layout.session));
     draw_arrow_button(layout.session_arrow, menu.sessions_open, point_in_rect(mouse, layout.session_arrow));
+    draw_dropdown_value(menu.renderer, layout.world, menu.world_name, "world", point_in_rect(mouse, layout.world));
+    draw_arrow_button(layout.world_arrow, menu.worlds_open, point_in_rect(mouse, layout.world_arrow));
     draw_button(menu.renderer, layout.host, "host", point_in_rect(mouse, layout.host));
     draw_button(menu.renderer, layout.join, "join from CB", point_in_rect(mouse, layout.join));
 
@@ -335,6 +389,7 @@ void demo_draw_menu_contents(const MenuScreen& menu) {
     }
 
     draw_session_dropdown(menu, layout);
+    draw_world_dropdown(menu, layout);
 }
 
 void demo_draw_menu_screen(const MenuScreen& menu) {
@@ -343,12 +398,23 @@ void demo_draw_menu_screen(const MenuScreen& menu) {
     EndDrawing();
 }
 
-MenuHit demo_menu_hit_test(bool color_picker_open, bool sessions_open, int session_scroll, u32 session_count, Vector2 mouse) {
+MenuHit demo_menu_hit_test(bool color_picker_open, bool sessions_open, bool worlds_open, int session_scroll, u32 session_count, u32 world_count, Vector2 mouse) {
     const MenuLayout layout = make_menu_layout();
     if (color_picker_open) {
         if (point_in_rect(mouse, slider_hit_rect(layout.color_slider[0]))) return {menu_control_color_r};
         if (point_in_rect(mouse, slider_hit_rect(layout.color_slider[1]))) return {menu_control_color_g};
         if (point_in_rect(mouse, slider_hit_rect(layout.color_slider[2]))) return {menu_control_color_b};
+    }
+    if (worlds_open && point_in_rect(mouse, layout.world_list)) {
+        const u32 visible = static_cast<u32>(fminf(
+            static_cast<float>(max_visible_world_rows),
+            static_cast<float>(world_count)));
+        for (u32 i = 0; i < visible; ++i) {
+            if (point_in_rect(mouse, world_row_rect(layout, static_cast<int>(i)))) {
+                return {menu_control_world_item, -1, static_cast<int>(i)};
+            }
+        }
+        return {};
     }
     if (sessions_open && point_in_rect(mouse, layout.session_list)) {
         const int scroll = session_scroll < 0 ? 0 : session_scroll;
@@ -362,11 +428,13 @@ MenuHit demo_menu_hit_test(bool color_picker_open, bool sessions_open, int sessi
             if (point_in_rect(mouse, session_delete_rect(row, layout.scale))) return {menu_control_session_delete, session_index};
             return {menu_control_session_item, session_index};
         }
+        return {};
     }
     if (point_in_circle(mouse, layout.color_center, layout.color_radius + 5.0f)) return {menu_control_color};
     if (point_in_rect(mouse, layout.player)) return {menu_control_player};
     if (point_in_rect(mouse, layout.session)) return {menu_control_session};
     if (point_in_rect(mouse, layout.session_arrow)) return {menu_control_session_dropdown};
+    if (point_in_rect(mouse, layout.world) || point_in_rect(mouse, layout.world_arrow)) return {menu_control_world_dropdown};
     if (point_in_rect(mouse, layout.host)) return {menu_control_host};
     if (point_in_rect(mouse, layout.join)) return {menu_control_join};
     return {};

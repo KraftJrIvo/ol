@@ -88,6 +88,19 @@ static void chunk_add_light_ref(Chunk* chunk, u32 id) {
     }
 }
 
+static bool chunk_remove_ref(u32* refs, u32* count, u32 id) {
+    if (!refs || !count) return false;
+    for (u32 i = 0; i < *count; ++i) {
+        if (refs[i] != id) continue;
+        const u32 last = *count - 1;
+        refs[i] = refs[last];
+        refs[last] = invalid_id;
+        --(*count);
+        return true;
+    }
+    return false;
+}
+
 u32 dimension_add_geometry(Dimension* dim, const MeshGeometry& geometry) {
     return arena_acquire(&dim->geometries, geometry);
 }
@@ -123,6 +136,27 @@ u32 dimension_add_light(Dimension* dim, LightSource light) {
     Chunk* chunk = arena_get(&dim->chunks, chunk_id);
     if (chunk) chunk_add_light_ref(chunk, id);
     return id;
+}
+
+bool dimension_remove_mesh(Dimension* dim, u32 mesh_id) {
+    if (!dim || !arena_has(&dim->meshes, mesh_id)) return false;
+
+    u32 empty_chunk_id = invalid_id;
+    for (u32 slot = 0; slot < dim->chunks.count; ++slot) {
+        Chunk* chunk = &dim->chunks.data[slot];
+        if (chunk_remove_ref(chunk->meshes.data(), &chunk->mesh_count, mesh_id)) {
+            if (chunk->mesh_count == 0 && chunk->sprite_count == 0 && chunk->light_count == 0) {
+                empty_chunk_id = arena_id_at_slot(&dim->chunks, slot);
+            }
+            break;
+        }
+    }
+
+    const bool removed = arena_remove(&dim->meshes, mesh_id);
+    if (removed && id_valid(empty_chunk_id)) {
+        arena_remove(&dim->chunks, empty_chunk_id);
+    }
+    return removed;
 }
 
 u32 dimension_add_player(Dimension* dim, const char* name, Color color, WorldPos feet_pos, bool local) {

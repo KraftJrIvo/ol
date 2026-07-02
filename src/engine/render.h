@@ -37,6 +37,13 @@ struct RenderState {
     float fov = 90.0f;
     bool draw_physics_debug = false;
     bool depth_test_edges = true;
+    bool brute_force_edge_occlusion = false;
+    u32 debug_edge_count = 0;
+    u32 debug_scene_triangle_count = 0;
+    u32 debug_unbounded_scene_triangle_count = 0;
+    u64 debug_edge_sample_count = 0;
+    u64 debug_edge_candidate_count = 0;
+    u64 debug_edge_ray_test_count = 0;
 };
 
 void renderer_init(RenderState* renderer);

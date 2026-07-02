@@ -166,6 +166,7 @@ u32 dimension_add_geometry(Dimension* dim, const MeshGeometry& geometry);
 u32 dimension_add_mesh(Dimension* dim, MeshInstance mesh);
 u32 dimension_add_sprite(Dimension* dim, SpriteInstance sprite);
 u32 dimension_add_light(Dimension* dim, LightSource light);
+bool dimension_remove_mesh(Dimension* dim, u32 mesh_id);
 u32 dimension_add_player(Dimension* dim, const char* name, Color color, WorldPos feet_pos, bool local);
 
 MeshGeometry make_box_geometry(const char* name, Vector3 size);

@@ -135,6 +135,7 @@ static void steam_publish_lobby_metadata(NetSession* net) {
     if (net->lobby_owner && !state->lobby_metadata_published) {
         SteamMatchmaking()->SetLobbyJoinable(lobby, true);
         SteamMatchmaking()->SetLobbyData(lobby, "name", net->session_name);
+        SteamMatchmaking()->SetLobbyData(lobby, "world", net->world_name);
         SteamMatchmaking()->SetLobbyData(lobby, "ol_version", "0.1");
         state->lobby_metadata_published = true;
     }
@@ -161,6 +162,16 @@ static bool steam_sync_lobby_session_name(NetSession* net) {
     return true;
 }
 
+static bool steam_sync_lobby_world_name(NetSession* net) {
+    if (!net->in_lobby || net->lobby_owner || !SteamMatchmaking()) return false;
+
+    const char* world = SteamMatchmaking()->GetLobbyData(steam_lobby_id(net), "world");
+    if (!world || !world[0] || std::strcmp(world, net->world_name) == 0) return false;
+
+    std::snprintf(net->world_name, sizeof(net->world_name), "%s", world);
+    return true;
+}
+
 static void steam_finish_lobby_enter(NetSession* net, CSteamID lobby, bool created_by_local_user) {
     net->pending = false;
     net->in_lobby = true;
@@ -178,6 +189,7 @@ static void steam_finish_lobby_enter(NetSession* net, CSteamID lobby, bool creat
     net->lobby_owner = created_by_local_user || (owner.IsValid() && local.IsValid() && owner == local);
     net->mode = net->lobby_owner ? net_hosting : net_client;
     steam_sync_lobby_session_name(net);
+    steam_sync_lobby_world_name(net);
 
     steam_publish_lobby_metadata(net);
     if (net->lobby_owner) {
@@ -227,7 +239,9 @@ static void steam_on_messages_session_request(SteamNetworkingMessagesSessionRequ
 
 static void steam_sync_lobby_members(NetSession* net) {
     if (!net->in_lobby || !SteamMatchmaking() || !SteamUser()) return;
-    if (steam_sync_lobby_session_name(net)) {
+    const bool session_changed = steam_sync_lobby_session_name(net);
+    const bool world_changed = steam_sync_lobby_world_name(net);
+    if (session_changed || world_changed) {
         net->just_entered_lobby = true;
     }
 
@@ -408,9 +422,11 @@ void net_shutdown(NetSession* net) {
 #endif
 }
 
-void net_host(NetSession* net, const char* session_name) {
+void net_host(NetSession* net, const char* session_name, const char* world_name) {
     std::snprintf(net->session_name, sizeof(net->session_name), "%s",
         session_name && session_name[0] ? session_name : "session");
+    std::snprintf(net->world_name, sizeof(net->world_name), "%s",
+        world_name && world_name[0] ? world_name : "playground");
     net_clear_peers(net);
     net->mode = net_hosting;
     net->lobby_owner = true;
@@ -438,7 +454,7 @@ void net_host(NetSession* net, const char* session_name) {
         return;
     }
 #endif
-    net_status(net, "Hosting offline session: %s", net->session_name);
+    net_status(net, "Hosting offline session: %s / %s", net->session_name, net->world_name);
 }
 
 void net_join_from_clipboard(NetSession* net) {
@@ -466,6 +482,8 @@ void net_join_from_clipboard(NetSession* net) {
     net->host_left = false;
     net->lobby_id = lobby_id;
     net->host_peer_id = 0;
+    net->session_name[0] = 0;
+    net->world_name[0] = 0;
     net->last_send_time = 0.0;
     net->last_reliable_send_time = -1000.0;
     net->restore_player_valid = false;

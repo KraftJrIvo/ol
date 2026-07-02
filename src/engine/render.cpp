@@ -240,14 +240,39 @@ struct ScreenEdgeList {
     u32 count = 0;
 };
 
+constexpr int scene_occlusion_grid_cols = 32;
+constexpr int scene_occlusion_grid_rows = 18;
+constexpr int scene_occlusion_grid_count = scene_occlusion_grid_cols * scene_occlusion_grid_rows;
+
 struct SceneTriangle {
     Vector3 a{};
     Vector3 b{};
     Vector3 c{};
+    Vector3 e1{};
+    Vector3 e2{};
+    Vector2 screen_min{};
+    Vector2 screen_max{};
+    bool screen_bounds_valid = false;
+    u32 query_stamp = 0;
 };
 
 struct SceneTriangleList {
     std::vector<SceneTriangle> triangles{};
+    std::array<std::vector<u32>, scene_occlusion_grid_count> bins{};
+    std::vector<u32> unbounded{};
+    int screen_w = 0;
+    int screen_h = 0;
+    u32 query_stamp = 1;
+};
+
+struct SceneCandidateTileCache {
+    std::vector<const SceneTriangle*> candidates{};
+    int min_col = -1;
+    int max_col = -1;
+    int min_row = -1;
+    int max_row = -1;
+    bool brute_force = false;
+    bool valid = false;
 };
 
 struct ProjectedEdgePoint {
@@ -255,6 +280,9 @@ struct ProjectedEdgePoint {
     float depth = 0.0f;
     float inv_w = 1.0f;
 };
+
+static void gather_point_scene_candidates(SceneTriangleList& scene, Vector2 point, bool brute_force, SceneCandidateTileCache* cache);
+static bool screen_bboxes_overlap(Vector2 a_min, Vector2 a_max, Vector2 b_min, Vector2 b_max);
 
 static float lerp_float(float a, float b, float t) {
     return a + (b - a) * t;
@@ -343,6 +371,111 @@ static bool project_edge_point(Vector3 p, const Matrix& view_matrix, const Matri
     return true;
 }
 
+static int clamp_int(int v, int lo, int hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+static int scene_grid_col_for_x(float x, int width) {
+    if (width <= 0) return 0;
+    const int col = static_cast<int>(floorf(x * static_cast<float>(scene_occlusion_grid_cols) / static_cast<float>(width)));
+    return clamp_int(col, 0, scene_occlusion_grid_cols - 1);
+}
+
+static int scene_grid_row_for_y(float y, int height) {
+    if (height <= 0) return 0;
+    const int row = static_cast<int>(floorf(y * static_cast<float>(scene_occlusion_grid_rows) / static_cast<float>(height)));
+    return clamp_int(row, 0, scene_occlusion_grid_rows - 1);
+}
+
+static int scene_grid_index(int col, int row) {
+    return row * scene_occlusion_grid_cols + col;
+}
+
+static void add_scene_triangle_to_grid(SceneTriangleList* scene, u32 tri_index) {
+    if (!scene || tri_index >= scene->triangles.size()) return;
+    const SceneTriangle& tri = scene->triangles[tri_index];
+    if (!tri.screen_bounds_valid) {
+        scene->unbounded.push_back(tri_index);
+        return;
+    }
+
+    const int min_col = scene_grid_col_for_x(tri.screen_min.x, scene->screen_w);
+    const int max_col = scene_grid_col_for_x(tri.screen_max.x, scene->screen_w);
+    const int min_row = scene_grid_row_for_y(tri.screen_min.y, scene->screen_h);
+    const int max_row = scene_grid_row_for_y(tri.screen_max.y, scene->screen_h);
+    for (int row = min_row; row <= max_row; ++row) {
+        for (int col = min_col; col <= max_col; ++col) {
+            scene->bins[scene_grid_index(col, row)].push_back(tri_index);
+        }
+    }
+}
+
+enum SceneTriangleProjection {
+    scene_triangle_skip,
+    scene_triangle_bounded,
+    scene_triangle_unbounded,
+};
+
+static SceneTriangleProjection clipped_triangle_screen_bounds(Vector3 a, Vector3 b, Vector3 c, const Camera3D& camera, const Matrix& view_matrix, const Matrix& projection_matrix, int width, int height, Vector2* out_min, Vector2* out_max) {
+    const Vector3 camera_forward = safe_norm(camera.target - camera.position, {0.0f, 0.0f, -1.0f});
+    const float near_plane = static_cast<float>(rlGetCullDistanceNear());
+    const Vector3 input[3] = {a, b, c};
+    const float dist[3] = {
+        Vector3DotProduct(a - camera.position, camera_forward) - near_plane,
+        Vector3DotProduct(b - camera.position, camera_forward) - near_plane,
+        Vector3DotProduct(c - camera.position, camera_forward) - near_plane,
+    };
+
+    Vector3 clipped[4]{};
+    int clipped_count = 0;
+    for (int i = 0; i < 3; ++i) {
+        const int next = (i + 1) % 3;
+        const bool current_in = dist[i] >= 0.0f;
+        const bool next_in = dist[next] >= 0.0f;
+        if (current_in && clipped_count < 4) {
+            clipped[clipped_count++] = input[i];
+        }
+        if (current_in != next_in && clipped_count < 4) {
+            const float denom = dist[i] - dist[next];
+            if (std::fabs(denom) > 0.000001f) {
+                const float t = dist[i] / denom;
+                clipped[clipped_count++] = input[i] + (input[next] - input[i]) * t;
+            }
+        }
+    }
+    if (clipped_count < 3) return scene_triangle_skip;
+
+    float min_x = std::numeric_limits<float>::max();
+    float min_y = std::numeric_limits<float>::max();
+    float max_x = -std::numeric_limits<float>::max();
+    float max_y = -std::numeric_limits<float>::max();
+    for (int i = 0; i < clipped_count; ++i) {
+        ProjectedEdgePoint p{};
+        if (!project_edge_point(clipped[i], view_matrix, projection_matrix, width, height, &p)) {
+            return scene_triangle_unbounded;
+        }
+        min_x = fminf(min_x, p.screen.x);
+        min_y = fminf(min_y, p.screen.y);
+        max_x = fmaxf(max_x, p.screen.x);
+        max_y = fmaxf(max_y, p.screen.y);
+    }
+
+    constexpr float bbox_pad = 2.0f;
+    min_x -= bbox_pad;
+    min_y -= bbox_pad;
+    max_x += bbox_pad;
+    max_y += bbox_pad;
+    if (max_x < 0.0f || max_y < 0.0f || min_x > static_cast<float>(width) || min_y > static_cast<float>(height)) {
+        return scene_triangle_skip;
+    }
+
+    if (out_min) *out_min = {min_x, min_y};
+    if (out_max) *out_max = {max_x, max_y};
+    return scene_triangle_bounded;
+}
+
 static Vector3 perspective_lerp_rel(Vector3 a, Vector3 b, float inv_w_a, float inv_w_b, float t) {
     const float wa = inv_w_a * (1.0f - t);
     const float wb = inv_w_b * t;
@@ -362,6 +495,7 @@ static void push_screen_edge(ScreenEdgeList* list, ProjectedEdgePoint a, Project
     float clip_t0 = 0.0f;
     float clip_t1 = 1.0f;
     if (!clip_screen_edge(&a.screen, &b.screen, &a.depth, &b.depth, width, height, thickness, &clip_t0, &clip_t1)) return;
+    if (Vector2Length(b.screen - a.screen) < 0.75f) return;
     a.inv_w = lerp_float(original_inv_w_a, original_inv_w_b, clip_t0);
     b.inv_w = lerp_float(original_inv_w_a, original_inv_w_b, clip_t1);
     const Vector3 clipped_rel_a = perspective_lerp_rel(original_rel_a, original_rel_b, original_inv_w_a, original_inv_w_b, clip_t0);
@@ -425,12 +559,30 @@ static Vector3 edge_rel_point_at(const ScreenEdge& edge, float t) {
     return perspective_lerp_rel(edge.rel_a, edge.rel_b, edge.inv_w_a, edge.inv_w_b, t);
 }
 
+static void push_scene_triangle(SceneTriangleList* scene, Vector3 rel_a, Vector3 rel_b, Vector3 rel_c, SceneTriangleProjection projection, Vector2 screen_min = {}, Vector2 screen_max = {}) {
+    if (!scene) return;
+    if (projection == scene_triangle_skip) return;
+
+    SceneTriangle tri{};
+    tri.a = rel_a;
+    tri.b = rel_b;
+    tri.c = rel_c;
+    tri.e1 = rel_b - rel_a;
+    tri.e2 = rel_c - rel_a;
+    if (projection == scene_triangle_bounded) {
+        tri.screen_min = screen_min;
+        tri.screen_max = screen_max;
+        tri.screen_bounds_valid = true;
+    }
+    const u32 tri_index = static_cast<u32>(scene->triangles.size());
+    scene->triangles.push_back(tri);
+    add_scene_triangle_to_grid(scene, tri_index);
+}
+
 static bool ray_intersects_scene_triangle(Vector3 origin, Vector3 dir, const SceneTriangle& tri, float max_dist) {
     constexpr float eps = 0.00001f;
-    const Vector3 e1 = tri.b - tri.a;
-    const Vector3 e2 = tri.c - tri.a;
-    const Vector3 h = Vector3CrossProduct(dir, e2);
-    const float det = Vector3DotProduct(e1, h);
+    const Vector3 h = Vector3CrossProduct(dir, tri.e2);
+    const float det = Vector3DotProduct(tri.e1, h);
     if (std::fabs(det) < eps) return false;
 
     const float inv_det = 1.0f / det;
@@ -438,22 +590,26 @@ static bool ray_intersects_scene_triangle(Vector3 origin, Vector3 dir, const Sce
     const float u = inv_det * Vector3DotProduct(s, h);
     if (u < -eps || u > 1.0f + eps) return false;
 
-    const Vector3 q = Vector3CrossProduct(s, e1);
+    const Vector3 q = Vector3CrossProduct(s, tri.e1);
     const float v = inv_det * Vector3DotProduct(dir, q);
     if (v < -eps || u + v > 1.0f + eps) return false;
 
-    const float dist = inv_det * Vector3DotProduct(e2, q);
+    const float dist = inv_det * Vector3DotProduct(tri.e2, q);
     return dist > 0.002f && dist < max_dist - 0.035f;
 }
 
-static bool scene_point_visible(const SceneTriangleList& scene, Vector3 camera_pos, Vector3 point) {
+static bool scene_point_visible(const std::vector<const SceneTriangle*>& candidates, Vector3 camera_pos, Vector3 point, const Vector2* sample_min = nullptr, const Vector2* sample_max = nullptr, u64* candidate_count = nullptr, u64* ray_test_count = nullptr) {
     const Vector3 delta = point - camera_pos;
     const float dist = safe_len(delta);
     if (dist <= 0.001f) return true;
 
     const Vector3 dir = delta / dist;
-    for (const SceneTriangle& tri : scene.triangles) {
-        if (ray_intersects_scene_triangle(camera_pos, dir, tri, dist)) return false;
+    for (const SceneTriangle* tri : candidates) {
+        if (!tri) continue;
+        if (sample_min && sample_max && tri->screen_bounds_valid && !screen_bboxes_overlap(*sample_min, *sample_max, tri->screen_min, tri->screen_max)) continue;
+        if (candidate_count) ++(*candidate_count);
+        if (ray_test_count) ++(*ray_test_count);
+        if (ray_intersects_scene_triangle(camera_pos, dir, *tri, dist)) return false;
     }
     return true;
 }
@@ -473,22 +629,38 @@ static bool sprite_occlusion_visible(const SpriteDepthOcclusion& occlusion, Vect
     return edge_depth <= sprite_depth + edge_depth_bias;
 }
 
-static bool edge_sample_visible(const ScreenEdge& edge, const SpriteDepthOcclusion& sprite_occlusion, const SceneTriangleList& scene, Vector3 camera_pos, float t) {
-    if (edge.use_scene_occlusion && !scene.triangles.empty()) {
-        if (!scene_point_visible(scene, camera_pos, edge_rel_point_at(edge, t))) return false;
+static bool edge_sample_visible(RenderState* renderer, const ScreenEdge& edge, const SpriteDepthOcclusion& sprite_occlusion, SceneTriangleList& scene, SceneCandidateTileCache* scene_cache, Vector3 camera_pos, float t) {
+    const Vector2 p = edge_point_at(edge, t);
+    if (renderer) ++renderer->debug_edge_sample_count;
+    if (edge.use_scene_occlusion && scene_cache) {
+        gather_point_scene_candidates(scene, p, renderer && renderer->brute_force_edge_occlusion, scene_cache);
+        constexpr float sample_bbox_pad = 2.0f;
+        const Vector2 sample_min = {p.x - sample_bbox_pad, p.y - sample_bbox_pad};
+        const Vector2 sample_max = {p.x + sample_bbox_pad, p.y + sample_bbox_pad};
+        const bool filter_by_sample = !(renderer && renderer->brute_force_edge_occlusion);
+        if (!scene_cache->candidates.empty() &&
+            !scene_point_visible(
+                scene_cache->candidates,
+                camera_pos,
+                edge_rel_point_at(edge, t),
+                filter_by_sample ? &sample_min : nullptr,
+                filter_by_sample ? &sample_max : nullptr,
+                renderer ? &renderer->debug_edge_candidate_count : nullptr,
+                renderer ? &renderer->debug_edge_ray_test_count : nullptr)) {
+            return false;
+        }
     }
 
-    const Vector2 p = edge_point_at(edge, t);
     const float edge_depth = edge_depth_at(edge, t);
     return sprite_occlusion_visible(sprite_occlusion, p, edge_depth);
 }
 
-static float refine_visibility_boundary(const ScreenEdge& edge, const SpriteDepthOcclusion& sprite_occlusion, const SceneTriangleList& scene, Vector3 camera_pos, float t0, bool visible0, float t1) {
+static float refine_visibility_boundary(RenderState* renderer, const ScreenEdge& edge, const SpriteDepthOcclusion& sprite_occlusion, SceneTriangleList& scene, SceneCandidateTileCache* scene_cache, Vector3 camera_pos, float t0, bool visible0, float t1) {
     float lo = t0;
     float hi = t1;
     for (int i = 0; i < 8; ++i) {
         const float mid = (lo + hi) * 0.5f;
-        if (edge_sample_visible(edge, sprite_occlusion, scene, camera_pos, mid) == visible0) lo = mid;
+        if (edge_sample_visible(renderer, edge, sprite_occlusion, scene, scene_cache, camera_pos, mid) == visible0) lo = mid;
         else hi = mid;
     }
     return (lo + hi) * 0.5f;
@@ -538,28 +710,106 @@ static void draw_edge_intervals(const ScreenEdge& edge, const std::vector<EdgeVi
     }
 }
 
-static void draw_depth_cut_screen_edges(RenderState* renderer, const ScreenEdgeList* list, const SpriteDepthOcclusion& sprite_occlusion, const SceneTriangleList& scene, Vector3 camera_pos) {
+static bool screen_bboxes_overlap(Vector2 a_min, Vector2 a_max, Vector2 b_min, Vector2 b_max) {
+    return a_max.x >= b_min.x && a_min.x <= b_max.x &&
+           a_max.y >= b_min.y && a_min.y <= b_max.y;
+}
+
+static u32 begin_scene_candidate_query(SceneTriangleList* scene) {
+    if (!scene) return 0;
+    ++scene->query_stamp;
+    if (scene->query_stamp == 0) {
+        for (SceneTriangle& tri : scene->triangles) tri.query_stamp = 0;
+        scene->query_stamp = 1;
+    }
+    return scene->query_stamp;
+}
+
+static void add_scene_candidate(SceneTriangleList* scene, u32 tri_index, u32 stamp, std::vector<const SceneTriangle*>* out_candidates) {
+    if (!scene || !out_candidates || tri_index >= scene->triangles.size()) return;
+    SceneTriangle& tri = scene->triangles[tri_index];
+    if (tri.query_stamp == stamp) return;
+    tri.query_stamp = stamp;
+    out_candidates->push_back(&tri);
+}
+
+static void gather_point_scene_candidates(SceneTriangleList& scene, Vector2 point, bool brute_force, SceneCandidateTileCache* cache) {
+    if (!cache) return;
+
+    constexpr float point_bbox_pad = 2.0f;
+    const int min_col = scene_grid_col_for_x(point.x - point_bbox_pad, scene.screen_w);
+    const int max_col = scene_grid_col_for_x(point.x + point_bbox_pad, scene.screen_w);
+    const int min_row = scene_grid_row_for_y(point.y - point_bbox_pad, scene.screen_h);
+    const int max_row = scene_grid_row_for_y(point.y + point_bbox_pad, scene.screen_h);
+    if (cache->valid &&
+        cache->brute_force == brute_force &&
+        cache->min_col == min_col &&
+        cache->max_col == max_col &&
+        cache->min_row == min_row &&
+        cache->max_row == max_row) {
+        return;
+    }
+
+    cache->valid = true;
+    cache->brute_force = brute_force;
+    cache->min_col = min_col;
+    cache->max_col = max_col;
+    cache->min_row = min_row;
+    cache->max_row = max_row;
+    cache->candidates.clear();
+    if (scene.triangles.empty()) return;
+
+    if (brute_force) {
+        for (const SceneTriangle& tri : scene.triangles) {
+            cache->candidates.push_back(&tri);
+        }
+        return;
+    }
+
+    const u32 stamp = begin_scene_candidate_query(&scene);
+    for (u32 tri_index : scene.unbounded) {
+        add_scene_candidate(&scene, tri_index, stamp, &cache->candidates);
+    }
+
+    for (int row = min_row; row <= max_row; ++row) {
+        for (int col = min_col; col <= max_col; ++col) {
+            const std::vector<u32>& bin = scene.bins[scene_grid_index(col, row)];
+            for (u32 tri_index : bin) {
+                if (tri_index >= scene.triangles.size()) continue;
+                add_scene_candidate(&scene, tri_index, stamp, &cache->candidates);
+            }
+        }
+    }
+}
+
+static void draw_depth_cut_screen_edges(RenderState* renderer, const ScreenEdgeList* list, const SpriteDepthOcclusion& sprite_occlusion, SceneTriangleList& scene, Vector3 camera_pos) {
     if (!list || list->count == 0) return;
 
     rlDisableDepthTest();
     rlEnableDepthMask();
 
+    SceneCandidateTileCache scene_cache{};
+    scene_cache.candidates.reserve(64);
+
     for (u32 i = 0; i < list->count; ++i) {
         const ScreenEdge& edge = list->edges[i];
+        scene_cache.valid = false;
+
         const Vector2 d = edge.b - edge.a;
         const float dominant_len = fmaxf(fabsf(d.x), fabsf(d.y));
-        const int sample_count = static_cast<int>(fmaxf(1.0f, ceilf(dominant_len)));
+        constexpr float edge_visibility_sample_step_px = 3.0f;
+        const int sample_count = static_cast<int>(fmaxf(1.0f, ceilf(dominant_len / edge_visibility_sample_step_px)));
 
         float prev_t = 0.0f;
-        bool prev_visible = edge_sample_visible(edge, sprite_occlusion, scene, camera_pos, prev_t);
+        bool prev_visible = edge_sample_visible(renderer, edge, sprite_occlusion, scene, &scene_cache, camera_pos, prev_t);
         float visible_start = prev_visible ? 0.0f : -1.0f;
         std::vector<EdgeVisibleInterval> intervals;
 
         for (int sample = 1; sample <= sample_count; ++sample) {
             const float t = static_cast<float>(sample) / static_cast<float>(sample_count);
-            const bool visible = edge_sample_visible(edge, sprite_occlusion, scene, camera_pos, t);
+            const bool visible = edge_sample_visible(renderer, edge, sprite_occlusion, scene, &scene_cache, camera_pos, t);
             if (visible != prev_visible) {
-                const float boundary = refine_visibility_boundary(edge, sprite_occlusion, scene, camera_pos, prev_t, prev_visible, t);
+                const float boundary = refine_visibility_boundary(renderer, edge, sprite_occlusion, scene, &scene_cache, camera_pos, prev_t, prev_visible, t);
                 if (prev_visible) intervals.push_back({visible_start, boundary});
                 else visible_start = boundary;
             }
@@ -613,7 +863,22 @@ static void draw_mesh_instance(RenderState* renderer, Dimension* dim, const Came
         Color shaded = mesh->lit ? color_scaled(base, face_light(dim, view, origin, n)) : base;
         shaded = mix_color(shaded, dim->fog_color, ff);
         DrawTriangle3D(a, b, c, shaded);
-        if (scene_triangles) scene_triangles->triangles.push_back({a, b, c});
+        if (scene_triangles) {
+            Vector2 screen_min{};
+            Vector2 screen_max{};
+            const SceneTriangleProjection projection = clipped_triangle_screen_bounds(
+                a,
+                b,
+                c,
+                camera,
+                view_matrix,
+                projection_matrix,
+                renderer->native_w,
+                renderer->native_h,
+                &screen_min,
+                &screen_max);
+            push_scene_triangle(scene_triangles, a, b, c, projection, screen_min, screen_max);
+        }
     }
 
     if (!mesh->draw_edges) return;
@@ -737,10 +1002,10 @@ static void push_player_cylinder_triangles(SceneTriangleList* scene_triangles, V
         const Vector3 t0 = top + Vector3{std::cos(a0) * radius, 0.0f, std::sin(a0) * radius};
         const Vector3 t1 = top + Vector3{std::cos(a1) * radius, 0.0f, std::sin(a1) * radius};
 
-        scene_triangles->triangles.push_back({b0, t0, t1});
-        scene_triangles->triangles.push_back({b0, t1, b1});
-        scene_triangles->triangles.push_back({top, t1, t0});
-        scene_triangles->triangles.push_back({bottom, b0, b1});
+        push_scene_triangle(scene_triangles, b0, t0, t1, scene_triangle_unbounded);
+        push_scene_triangle(scene_triangles, b0, t1, b1, scene_triangle_unbounded);
+        push_scene_triangle(scene_triangles, top, t1, t0, scene_triangle_unbounded);
+        push_scene_triangle(scene_triangles, bottom, b0, b1, scene_triangle_unbounded);
     }
 }
 
@@ -917,6 +1182,12 @@ static void draw_crosshair(RenderState* renderer) {
 
 void renderer_render_dimension_to_target(RenderState* renderer, Dimension* dim, const CameraView& view, u32 local_player_id) {
     if (!renderer->target_ready) renderer_ensure_target(renderer);
+    renderer->debug_edge_count = 0;
+    renderer->debug_scene_triangle_count = 0;
+    renderer->debug_unbounded_scene_triangle_count = 0;
+    renderer->debug_edge_sample_count = 0;
+    renderer->debug_edge_candidate_count = 0;
+    renderer->debug_edge_ray_test_count = 0;
 
     Camera3D camera{};
     camera.position = {0.0f, view.eye_height, 0.0f};
@@ -939,6 +1210,9 @@ void renderer_render_dimension_to_target(RenderState* renderer, Dimension* dim, 
 
     ScreenEdgeList edge_list{};
     SceneTriangleList scene_triangles{};
+    scene_triangles.screen_w = renderer->native_w;
+    scene_triangles.screen_h = renderer->native_h;
+    scene_triangles.triangles.reserve(2048);
     for (u32 chunk_slot = 0; chunk_slot < dim->chunks.count; ++chunk_slot) {
         const Chunk* chunk = &dim->chunks.data[chunk_slot];
         float chunk_dist = 0.0f;
@@ -948,6 +1222,9 @@ void renderer_render_dimension_to_target(RenderState* renderer, Dimension* dim, 
             draw_mesh_instance(renderer, dim, view, camera, view_matrix, projection_matrix, &edge_list, &scene_triangles, arena_get(&dim->meshes, chunk->meshes[i]), chunk_dist);
         }
     }
+    renderer->debug_edge_count = edge_list.count;
+    renderer->debug_scene_triangle_count = static_cast<u32>(scene_triangles.triangles.size());
+    renderer->debug_unbounded_scene_triangle_count = static_cast<u32>(scene_triangles.unbounded.size());
 
     SpriteDepthOcclusion sprite_occlusion{};
     if (renderer->depth_test_edges) {
@@ -967,7 +1244,7 @@ void renderer_render_dimension_to_target(RenderState* renderer, Dimension* dim, 
     }
 
     PlayerNameTag hovered_tag{};
-    draw_players(renderer, dim, view, local_player_id, camera, view_matrix, projection_matrix, &edge_list, &scene_triangles, &hovered_tag);
+    draw_players(renderer, dim, view, local_player_id, camera, view_matrix, projection_matrix, &edge_list, nullptr, &hovered_tag);
     draw_player_aim_rays(renderer, dim, view, local_player_id, camera);
     draw_physics(renderer, dim, view);
 

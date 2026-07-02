@@ -1545,6 +1545,10 @@ bool run_edge_compare_test() {
         {"user-wall", {6.8266f, 1.6500f, -5.5259f}, {11.4904f, 1.8436f, -12.0230f}},
         {"user-sprite-alpha", {-1.0488f, 1.6500f, -9.7776f}, {-4.3593f, 1.2981f, -2.5033f}},
         {"user-missing-contours", {10.9845f, 1.6500f, -0.2620f}, {10.4826f, -1.3381f, -7.6660f}},
+        {"user-edge-wall-northwest", {-6.8260f, 1.6500f, -13.8749f}, {-13.2037f, 0.6685f, -18.6037f}},
+        {"user-edge-blocks", {-6.7242f, 1.6500f, -6.1981f}, {-1.7872f, -0.9408f, -0.4611f}},
+        {"user-edge-west-wall", {-16.0361f, 1.6500f, 11.9724f}, {-19.0325f, 0.6336f, 19.3201f}},
+        {"user-edge-tunnel-inside", {10.4218f, 0.8000f, -2.0930f}, {10.4921f, -0.0941f, -10.0426f}},
         {"wall-blocks", {-12.5f, 1.7f, 1.0f}, {2.0f, 1.0f, -5.0f}},
     };
 
@@ -1556,21 +1560,99 @@ bool run_edge_compare_test() {
 
         char old_path[128]{};
         char new_path[128]{};
+        char ref_path[128]{};
         std::snprintf(old_path, sizeof(old_path), "test-output/edge-compare-%s-2d.png", view_def.name);
         std::snprintf(new_path, sizeof(new_path), "test-output/edge-compare-%s-depth.png", view_def.name);
+        std::snprintf(ref_path, sizeof(ref_path), "test-output/edge-compare-%s-reference.png", view_def.name);
 
         renderer.depth_test_edges = false;
+        renderer.brute_force_edge_occlusion = false;
         ol::renderer_draw_dimension(&renderer, dim, view, app->local_player_id);
         ok = expect_true(export_render_target(&renderer, old_path), "2D edge comparison image exported") && ok;
 
         renderer.depth_test_edges = true;
+        renderer.brute_force_edge_occlusion = false;
         ol::renderer_draw_dimension(&renderer, dim, view, app->local_player_id);
         ok = expect_true(export_render_target(&renderer, new_path), "Depth edge comparison image exported") && ok;
+
+        renderer.depth_test_edges = true;
+        renderer.brute_force_edge_occlusion = true;
+        ol::renderer_draw_dimension(&renderer, dim, view, app->local_player_id);
+        ok = expect_true(export_render_target(&renderer, ref_path), "Reference edge comparison image exported") && ok;
     }
 
     ol::renderer_shutdown(&renderer);
     CloseWindow();
     if (ok) std::printf("edge comparison images exported to test-output/edge-compare-*.png\n");
+    return ok;
+}
+
+bool run_hills_render_benchmark() {
+    SetTraceLogLevel(LOG_WARNING);
+    SetConfigFlags(FLAG_WINDOW_HIDDEN);
+    InitWindow(960, 540, "ol hills render benchmark");
+
+    ol::RenderState renderer{};
+    ol::renderer_init(&renderer);
+
+    auto app = std::make_unique<ol::DemoApp>();
+    std::snprintf(app->world_name, sizeof(app->world_name), "hills");
+    std::snprintf(app->session_name, sizeof(app->session_name), "render-benchmark");
+
+    const Vector3 feet_m = {-2.4580f, 2.3080f, 71.6100f};
+    const ol::WorldPos saved_feet = test_pos(0, feet_m, 16.0f);
+    app->profile.session_count = 1;
+    ol::SavedSessionState& session = app->profile.sessions[0];
+    session.valid = true;
+    std::snprintf(session.name, sizeof(session.name), "%s", app->session_name);
+    std::snprintf(session.world_name, sizeof(session.world_name), "%s", app->world_name);
+    session.player_count = 1;
+    session.players[0].valid = true;
+    session.players[0].peer_id = app->net.local_peer_id;
+    session.players[0].chunk = saved_feet.chunk;
+    session.players[0].local = saved_feet.local;
+
+    ol::demo_generate_world(app.get());
+    ol::Dimension* dim = ol::world_get_dimension(&app->world, app->dimension_id);
+    const EdgeCompareView view_def = {
+        "hills-lag",
+        {-2.4580f, 4.0080f, 71.6100f},
+        {-1.0408f, 4.3231f, 79.4772f}
+    };
+    const ol::CameraView view = dim ? make_edge_compare_camera(app->dimension_id, dim, view_def) : ol::CameraView{};
+
+    bool ok = expect_true(dim != nullptr, "Hills benchmark generated a dimension");
+    if (dim) {
+        ol::renderer_ensure_target(&renderer);
+        constexpr int warmup_frames = 3;
+        constexpr int measured_frames = 30;
+        for (int mode = 0; mode < 2; ++mode) {
+            renderer.depth_test_edges = mode != 0;
+            for (int i = 0; i < warmup_frames; ++i) {
+                ol::renderer_render_dimension_to_target(&renderer, dim, view, app->local_player_id);
+            }
+
+            const double start = GetTime();
+            for (int i = 0; i < measured_frames; ++i) {
+                ol::renderer_render_dimension_to_target(&renderer, dim, view, app->local_player_id);
+            }
+            const double elapsed_ms = (GetTime() - start) * 1000.0;
+            std::printf(
+                "hills render benchmark (%s edges): frames=%d avg_ms=%.3f edges=%u tris=%u unbounded=%u samples=%llu candidates=%llu ray_tests=%llu\n",
+                renderer.depth_test_edges ? "depth" : "flat",
+                measured_frames,
+                elapsed_ms / static_cast<double>(measured_frames),
+                renderer.debug_edge_count,
+                renderer.debug_scene_triangle_count,
+                renderer.debug_unbounded_scene_triangle_count,
+                static_cast<unsigned long long>(renderer.debug_edge_sample_count),
+                static_cast<unsigned long long>(renderer.debug_edge_candidate_count),
+                static_cast<unsigned long long>(renderer.debug_edge_ray_test_count));
+        }
+    }
+
+    ol::renderer_shutdown(&renderer);
+    CloseWindow();
     return ok;
 }
 
@@ -1832,6 +1914,7 @@ bool run_menu_visual_test() {
         &renderer,
         "player",
         "playground",
+        "hills",
         "Offline build; Steamworks disabled",
         {90, 180, 255, 255}
     });
@@ -1871,6 +1954,7 @@ int main(int argc, char** argv) {
     bool run_menu = argc == 1;
     bool run_edge_compare = false;
     bool run_edge_visibility = false;
+    bool run_hills_benchmark = false;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--physics") == 0) run_physics = true;
@@ -1878,6 +1962,7 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--menu") == 0) run_menu = true;
         if (std::strcmp(argv[i], "--edge-compare") == 0) run_edge_compare = true;
         if (std::strcmp(argv[i], "--edge-visibility") == 0) run_edge_visibility = true;
+        if (std::strcmp(argv[i], "--hills-render-benchmark") == 0) run_hills_benchmark = true;
     }
 
     bool ok = true;
@@ -1885,6 +1970,7 @@ int main(int argc, char** argv) {
     if (run_visual) ok = run_visual_test() && ok;
     if (run_edge_compare) ok = run_edge_compare_test() && ok;
     if (run_edge_visibility) ok = run_edge_visibility_test() && ok;
+    if (run_hills_benchmark) ok = run_hills_render_benchmark() && ok;
     if (run_menu) ok = run_menu_visual_test() && ok;
     return ok ? 0 : 1;
 }

@@ -6,6 +6,7 @@ namespace ol {
 
 constexpr u32 max_saved_sessions = 24;
 constexpr u32 max_visible_session_rows = 5;
+constexpr u32 max_visible_world_rows = 4;
 
 enum MenuInputField : u32 {
     menu_input_none,
@@ -25,7 +26,9 @@ enum MenuControl : u32 {
     menu_control_color_b,
     menu_control_session_dropdown,
     menu_control_session_item,
-    menu_control_session_delete
+    menu_control_session_delete,
+    menu_control_world_dropdown,
+    menu_control_world_item
 };
 
 enum PauseControl : u32 {
@@ -40,13 +43,17 @@ struct MenuScreen {
     RenderState* renderer = nullptr;
     const char* player_name = "";
     const char* session_name = "";
+    const char* world_name = "";
     const char* status = "";
     Color player_color = WHITE;
     u32 active_field = menu_input_none;
     bool color_picker_open = false;
     bool sessions_open = false;
+    bool worlds_open = false;
     const char* const* session_names = nullptr;
     u32 session_count = 0;
+    const char* const* world_names = nullptr;
+    u32 world_count = 0;
     int session_scroll = 0;
     int deleting_session_index = -1;
     float delete_progress = 0.0f;
@@ -61,6 +68,7 @@ struct PauseScreen {
 struct MenuHit {
     u32 control = menu_control_none;
     int session_index = -1;
+    int world_index = -1;
 };
 
 struct PauseHit {
@@ -69,7 +77,7 @@ struct PauseHit {
 
 void demo_draw_menu_contents(const MenuScreen& menu);
 void demo_draw_menu_screen(const MenuScreen& menu);
-MenuHit demo_menu_hit_test(bool color_picker_open, bool sessions_open, int session_scroll, u32 session_count, Vector2 mouse);
+MenuHit demo_menu_hit_test(bool color_picker_open, bool sessions_open, bool worlds_open, int session_scroll, u32 session_count, u32 world_count, Vector2 mouse);
 int demo_menu_color_value_from_mouse(u32 control, Vector2 mouse);
 
 void demo_draw_pause_contents(const PauseScreen& pause);

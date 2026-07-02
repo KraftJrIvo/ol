@@ -99,6 +99,7 @@ void physics_init(PhysicsWorld* physics);
 u32 physics_add_point_mass(PhysicsWorld* physics, PointMass mass);
 u32 physics_add_link(PhysicsWorld* physics, Link link);
 u32 physics_add_box(PhysicsWorld* physics, BoxCollider box);
+bool physics_remove_box(PhysicsWorld* physics, u32 box_id);
 
 Vector3 physics_mass_velocity(const PointMass* mass, float chunk_size, float dt);
 void physics_set_mass_velocity(PointMass* mass, Vector3 velocity, float chunk_size, float dt);

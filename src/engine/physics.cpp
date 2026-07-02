@@ -118,6 +118,10 @@ u32 physics_add_box(PhysicsWorld* physics, BoxCollider box) {
     return arena_acquire(&physics->boxes, box);
 }
 
+bool physics_remove_box(PhysicsWorld* physics, u32 box_id) {
+    return physics ? arena_remove(&physics->boxes, box_id) : false;
+}
+
 Vector3 physics_mass_velocity(const PointMass* mass, float chunk_size, float dt) {
     if (dt <= 0.0f) return Vector3Zero();
     return world_delta_meters(mass->pos, mass->prev, chunk_size) / dt;
@@ -342,6 +346,7 @@ static void collide_all(Dimension* dim) {
 
     for (u32 link_slot = 0; link_slot < dim->physics.links.count; ++link_slot) {
         Link* link = &dim->physics.links.data[link_slot];
+        if (!link->collideable) continue;
         for (u32 box_slot = 0; box_slot < dim->physics.boxes.count; ++box_slot) {
             collide_link_box(dim, link, &dim->physics.boxes.data[box_slot]);
         }

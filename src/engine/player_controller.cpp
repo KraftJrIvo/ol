@@ -36,6 +36,12 @@ static bool cylinder_overlaps_box(const BoxCollider* box, Vector3 feet_rel, floa
            cylinder_overlaps_box_y(box, feet_rel, height);
 }
 
+static bool box_near_feet_xz(const Dimension* dim, const BoxCollider* box, WorldPos feet, float radius, float margin = 0.75f) {
+    const Vector3 rel = world_delta_meters(feet, box->pos, dim->chunk_size_m);
+    return std::fabs(rel.x) <= box->half.x + radius + margin &&
+           std::fabs(rel.z) <= box->half.z + radius + margin;
+}
+
 static bool cylinder_blocks_box_side_y(const BoxCollider* box, Vector3 feet_rel, float height) {
     constexpr float eps = 0.02f;
     return feet_rel.y < box->half.y - eps &&
@@ -94,6 +100,7 @@ static bool surface_has_immediate_clearance(const Dimension* dim, const PlayerEn
         if (slot == ignore_box_slot) continue;
         const BoxCollider* other = &dim->physics.boxes.data[slot];
         if (!other->axis_aligned) continue;
+        if (!box_near_feet_xz(dim, other, surface_feet, player ? player->body_radius : 0.02f, 0.12f)) continue;
         const Vector3 rel = world_delta_meters(surface_feet, other->pos, dim->chunk_size_m);
         const float footprint_eps = surface_y > 0.05 && player ? player->body_radius : 0.02f;
         if (std::fabs(rel.x) > other->half.x + footprint_eps) continue;
@@ -107,6 +114,7 @@ static bool surface_has_immediate_clearance(const Dimension* dim, const PlayerEn
 
 static bool box_top_surface_y(const Dimension* dim, const PlayerEntity* player, u32 box_slot, WorldPos feet, float radius, double* out_y) {
     const BoxCollider* box = &dim->physics.boxes.data[box_slot];
+    if (!box_near_feet_xz(dim, box, feet, radius, 0.12f)) return false;
     const Vector3 normal = box_top_normal_world(box);
     if (normal.y < 0.35f) return false;
 
@@ -213,6 +221,7 @@ bool player_can_use_height(const Dimension* dim, const PlayerEntity* player, Wor
     for (u32 i = 0; i < dim->physics.boxes.count; ++i) {
         const BoxCollider* box = &dim->physics.boxes.data[i];
         if (!box->axis_aligned) continue;
+        if (!box_near_feet_xz(dim, box, feet_pos, player->body_radius, 0.08f)) continue;
         const Vector3 rel = world_delta_meters(feet_pos, box->pos, dim->chunk_size_m);
         if (rel.y >= box->half.y - 0.01f) continue;
         if (rel.y + height <= -box->half.y + 0.01f) continue;
@@ -227,6 +236,7 @@ static void resolve_vertical(Dimension* dim, PlayerEntity* player, WorldPos prev
     player->on_ground = false;
     for (u32 i = 0; i < dim->physics.boxes.count; ++i) {
         const BoxCollider* box = &dim->physics.boxes.data[i];
+        if (!box_near_feet_xz(dim, box, *feet, player->body_radius, 0.85f)) continue;
 
         if (*vertical_velocity <= 0.0f) {
             double surface_y = 0.0;
@@ -337,6 +347,7 @@ static bool face_has_flush_neighbor(const Dimension* dim, u32 box_slot, WorldPos
         if (slot == box_slot) continue;
         const BoxCollider* other = &dim->physics.boxes.data[slot];
         if (!other->axis_aligned) continue;
+        if (!box_near_feet_xz(dim, other, feet, radius, 0.10f)) continue;
 
         const double other_face = negative_face ? box_axis_max(other, dim->chunk_size_m, x_axis) : box_axis_min(other, dim->chunk_size_m, x_axis);
         if (std::fabs(other_face - face) > seam_eps) continue;
@@ -357,6 +368,7 @@ static bool side_can_step_onto_box(const Dimension* dim, const PlayerEntity* pla
 
 static bool resolve_rotated_box_x_side(Dimension* dim, PlayerEntity* player, const BoxCollider* box, WorldPos previous_feet, WorldPos* feet, float* velocity_axis, bool allow_step) {
     if (box->axis_aligned) return false;
+    if (!box_near_feet_xz(dim, box, *feet, player->body_radius, 0.85f)) return false;
 
     const Quaternion inv = QuaternionInvert(box->rotation);
     const Vector3 rel = world_delta_meters(*feet, box->pos, dim->chunk_size_m);
@@ -393,6 +405,7 @@ static bool resolve_rotated_box_side_penetration(Dimension* dim, PlayerEntity* p
     if (box->axis_aligned) return false;
 
     const u32 box_slot = static_cast<u32>(box - dim->physics.boxes.data.data());
+    if (!box_near_feet_xz(dim, box, *feet, player->body_radius, 0.85f)) return false;
     double surface_y = 0.0;
     if (!box_top_surface_y(dim, player, box_slot, *feet, player->body_radius, &surface_y)) return false;
 
@@ -425,6 +438,7 @@ static void resolve_rotated_box_side_penetrations(Dimension* dim, PlayerEntity* 
 static void resolve_axis(Dimension* dim, PlayerEntity* player, WorldPos previous_feet, WorldPos* feet, float* velocity_axis, bool x_axis, bool allow_step) {
     for (u32 i = 0; i < dim->physics.boxes.count; ++i) {
         const BoxCollider* box = &dim->physics.boxes.data[i];
+        if (!box_near_feet_xz(dim, box, *feet, player->body_radius, 0.85f)) continue;
         if (!box->axis_aligned) {
             if (x_axis) resolve_rotated_box_x_side(dim, player, box, previous_feet, feet, velocity_axis, allow_step);
             continue;
@@ -466,6 +480,7 @@ static void resolve_box_corners(Dimension* dim, PlayerEntity* player, WorldPos* 
     for (u32 i = 0; i < dim->physics.boxes.count; ++i) {
         const BoxCollider* box = &dim->physics.boxes.data[i];
         if (!box->axis_aligned) continue;
+        if (!box_near_feet_xz(dim, box, *feet, player->body_radius, 0.08f)) continue;
 
         Vector3 rel = world_delta_meters(*feet, box->pos, dim->chunk_size_m);
         if (!cylinder_overlaps_box_y(box, rel, player->current_height)) continue;

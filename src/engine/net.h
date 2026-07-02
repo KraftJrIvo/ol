@@ -91,13 +91,14 @@ struct NetSession {
     NetPlayerState restore_player{};
     bool restore_player_valid = false;
     char session_name[32] = "session";
+    char world_name[32] = "playground";
     char status[128]{};
     void* steam_state = nullptr;
 };
 
 void net_init(NetSession* net);
 void net_shutdown(NetSession* net);
-void net_host(NetSession* net, const char* session_name);
+void net_host(NetSession* net, const char* session_name, const char* world_name);
 void net_join_from_clipboard(NetSession* net);
 void net_leave(NetSession* net);
 void net_copy_lobby_to_clipboard(NetSession* net);

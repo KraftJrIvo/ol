@@ -13,7 +13,7 @@ namespace ol {
 static void record_current_world_state(DemoApp* app);
 static void save_profile(DemoApp* app);
 static CameraView make_player_camera_view(DemoApp* app, Dimension* dim, const PlayerEntity* player);
-static void sync_session_from_network(DemoApp* app, Dimension* dim, PlayerEntity* player);
+static bool sync_session_from_network(DemoApp* app, Dimension* dim, PlayerEntity* player);
 
 static void add_text_char(char* text, size_t cap, int c) {
     if (c < 32 || c > 126) return;
@@ -53,6 +53,78 @@ static void copy_text(char* dst, size_t cap, const char* src) {
     std::snprintf(dst, cap, "%s", src ? src : "");
 }
 
+static bool key_in_history_range(int key) {
+    return key >= 0 && key < 512;
+}
+
+static bool frame_key_pressed(DemoApp* app, int key, const std::array<bool, 512>& queued_keys) {
+    const bool down = IsKeyDown(key);
+    const bool queued = key_in_history_range(key) ? queued_keys[static_cast<u32>(key)] : false;
+    const bool previous = key_in_history_range(key) ? app->previous_key_down[static_cast<u32>(key)] : false;
+    return queued || IsKeyPressed(key) || (down && !previous);
+}
+
+static void update_previous_key(DemoApp* app, int key) {
+    if (key_in_history_range(key)) {
+        app->previous_key_down[static_cast<u32>(key)] = IsKeyDown(key);
+    }
+}
+
+static void capture_frame_input(DemoApp* app) {
+    std::array<bool, 512> queued_keys{};
+    for (int key = GetKeyPressed(); key != 0; key = GetKeyPressed()) {
+        if (key_in_history_range(key)) queued_keys[static_cast<u32>(key)] = true;
+    }
+
+    DemoFrameInput input{};
+    const bool left_down = IsMouseButtonDown(MOUSE_LEFT_BUTTON);
+    input.mouse_left_down = left_down;
+    input.mouse_left_pressed = IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || (left_down && !app->previous_mouse_left_down);
+    input.mouse_left_released = IsMouseButtonReleased(MOUSE_LEFT_BUTTON) || (!left_down && app->previous_mouse_left_down);
+
+    input.tab_pressed = frame_key_pressed(app, KEY_TAB, queued_keys);
+    input.backspace_pressed = frame_key_pressed(app, KEY_BACKSPACE, queued_keys);
+    input.escape_pressed = frame_key_pressed(app, KEY_ESCAPE, queued_keys);
+    input.enter_pressed = frame_key_pressed(app, KEY_ENTER, queued_keys);
+    input.plus_pressed = frame_key_pressed(app, KEY_EQUAL, queued_keys) || frame_key_pressed(app, KEY_KP_ADD, queued_keys);
+    input.minus_pressed = frame_key_pressed(app, KEY_MINUS, queued_keys) || frame_key_pressed(app, KEY_KP_SUBTRACT, queued_keys);
+    input.f3_pressed = frame_key_pressed(app, KEY_F3, queued_keys);
+    input.r_pressed = frame_key_pressed(app, KEY_R, queued_keys);
+    input.c_pressed = frame_key_pressed(app, KEY_C, queued_keys);
+    input.o_pressed = frame_key_pressed(app, KEY_O, queued_keys);
+    input.space_pressed = frame_key_pressed(app, KEY_SPACE, queued_keys);
+
+    app->frame_input = input;
+    app->previous_mouse_left_down = left_down;
+
+    const int tracked_keys[] = {
+        KEY_TAB, KEY_BACKSPACE, KEY_ESCAPE, KEY_ENTER, KEY_EQUAL, KEY_KP_ADD,
+        KEY_MINUS, KEY_KP_SUBTRACT, KEY_F3, KEY_R, KEY_C, KEY_O, KEY_SPACE
+    };
+    for (int key : tracked_keys) update_previous_key(app, key);
+}
+
+static constexpr const char* world_playground_name = "playground";
+static constexpr const char* world_hills_name = "hills";
+static constexpr const char* world_choices[] = {
+    world_playground_name,
+    world_hills_name,
+};
+static constexpr u32 world_choice_count = static_cast<u32>(sizeof(world_choices) / sizeof(world_choices[0]));
+
+static const char* canonical_world_name(const char* name) {
+    if (name && std::strcmp(name, world_hills_name) == 0) return world_hills_name;
+    return world_playground_name;
+}
+
+static bool is_landscape_world(const char* name) {
+    return std::strcmp(canonical_world_name(name), world_hills_name) == 0;
+}
+
+static void copy_world_name(char* dst, size_t cap, const char* src) {
+    copy_text(dst, cap, canonical_world_name(src));
+}
+
 static void mark_profile_dirty(DemoApp* app) {
     app->profile_dirty = true;
 }
@@ -81,7 +153,7 @@ static const SavedSessionState* find_session(const DemoProfile* profile, const c
     return idx >= 0 ? &profile->sessions[static_cast<u32>(idx)] : nullptr;
 }
 
-static SavedSessionState* upsert_session(DemoProfile* profile, const char* name) {
+static SavedSessionState* upsert_session(DemoProfile* profile, const char* name, const char* world_name = nullptr) {
     if (!name || !name[0]) return nullptr;
 
     const int existing = find_session_index(*profile, name);
@@ -101,10 +173,16 @@ static SavedSessionState* upsert_session(DemoProfile* profile, const char* name)
         session = SavedSessionState{};
         session.valid = true;
         copy_text(session.name, sizeof(session.name), name);
+        copy_world_name(session.world_name, sizeof(session.world_name), world_name);
     }
 
     session.valid = true;
     copy_text(session.name, sizeof(session.name), name);
+    if (world_name && world_name[0]) {
+        copy_world_name(session.world_name, sizeof(session.world_name), world_name);
+    } else if (!session.world_name[0]) {
+        copy_world_name(session.world_name, sizeof(session.world_name), world_playground_name);
+    }
     profile->sessions[0] = session;
     return &profile->sessions[0];
 }
@@ -118,6 +196,7 @@ static SavedSessionState* append_loaded_session(DemoProfile* profile, const char
     session = SavedSessionState{};
     session.valid = true;
     copy_text(session.name, sizeof(session.name), name);
+    copy_world_name(session.world_name, sizeof(session.world_name), world_playground_name);
     return &session;
 }
 
@@ -146,6 +225,9 @@ static void remove_session_at(DemoApp* app, int index) {
         const char* replacement = app->profile.session_count > 0 ? app->profile.sessions[0].name : "session";
         copy_text(app->session_name, sizeof(app->session_name), replacement);
         copy_text(app->profile.session_name, sizeof(app->profile.session_name), app->session_name);
+        const char* replacement_world = app->profile.session_count > 0 ? app->profile.sessions[0].world_name : app->profile.world_name;
+        copy_world_name(app->world_name, sizeof(app->world_name), replacement_world);
+        copy_world_name(app->profile.world_name, sizeof(app->profile.world_name), app->world_name);
     }
     app->deleting_session_index = -1;
     app->delete_hold_active = false;
@@ -226,6 +308,7 @@ static void load_profile(DemoApp* app) {
     if (!file) {
         copy_text(app->player_name, sizeof(app->player_name), app->profile.player_name);
         copy_text(app->session_name, sizeof(app->session_name), app->profile.session_name);
+        copy_world_name(app->world_name, sizeof(app->world_name), app->profile.world_name);
         app->player_color = app->profile.player_color;
         app->renderer.fov = static_cast<float>(app->profile.fov);
         app->renderer.scale_power = app->profile.scale_power;
@@ -242,6 +325,10 @@ static void load_profile(DemoApp* app) {
             decode_text_token(std::strtok(nullptr, " \t\r\n"), app->profile.player_name, sizeof(app->profile.player_name));
         } else if (std::strcmp(cmd, "session") == 0) {
             decode_text_token(std::strtok(nullptr, " \t\r\n"), app->profile.session_name, sizeof(app->profile.session_name));
+        } else if (std::strcmp(cmd, "world") == 0) {
+            char world[32]{};
+            decode_text_token(std::strtok(nullptr, " \t\r\n"), world, sizeof(world));
+            copy_world_name(app->profile.world_name, sizeof(app->profile.world_name), world);
         } else if (std::strcmp(cmd, "color") == 0) {
             const char* r = std::strtok(nullptr, " \t\r\n");
             const char* g = std::strtok(nullptr, " \t\r\n");
@@ -263,7 +350,12 @@ static void load_profile(DemoApp* app) {
         } else if (std::strcmp(cmd, "begin") == 0) {
             char name[32]{};
             decode_text_token(std::strtok(nullptr, " \t\r\n"), name, sizeof(name));
+            char world[32]{};
+            decode_text_token(std::strtok(nullptr, " \t\r\n"), world, sizeof(world));
             current = name[0] ? append_loaded_session(&app->profile, name) : nullptr;
+            if (current) {
+                copy_world_name(current->world_name, sizeof(current->world_name), world[0] ? world : world_playground_name);
+            }
         } else if (std::strcmp(cmd, "end") == 0) {
             current = nullptr;
         } else if (std::strcmp(cmd, "p") == 0 && current) {
@@ -307,6 +399,7 @@ static void load_profile(DemoApp* app) {
 
     copy_text(app->player_name, sizeof(app->player_name), app->profile.player_name);
     copy_text(app->session_name, sizeof(app->session_name), app->profile.session_name);
+    copy_world_name(app->world_name, sizeof(app->world_name), app->profile.world_name);
     app->player_color = app->profile.player_color;
     app->renderer.fov = static_cast<float>(app->profile.fov);
     app->renderer.scale_power = app->profile.scale_power;
@@ -316,6 +409,7 @@ static void load_profile(DemoApp* app) {
 static void save_profile(DemoApp* app) {
     copy_text(app->profile.player_name, sizeof(app->profile.player_name), app->player_name);
     copy_text(app->profile.session_name, sizeof(app->profile.session_name), app->session_name);
+    copy_world_name(app->profile.world_name, sizeof(app->profile.world_name), app->world_name);
     app->profile.player_color = app->player_color;
     app->profile.fov = static_cast<int>(clampf(floorf(app->renderer.fov + 0.5f), 60.0f, 120.0f));
     app->profile.scale_power = static_cast<int>(clampf(static_cast<float>(app->renderer.scale_power), 0.0f, 4.0f));
@@ -329,6 +423,8 @@ static void save_profile(DemoApp* app) {
     std::fprintf(file, "player %s\n", encoded);
     encode_text_token(app->profile.session_name, encoded, sizeof(encoded));
     std::fprintf(file, "session %s\n", encoded);
+    encode_text_token(app->profile.world_name, encoded, sizeof(encoded));
+    std::fprintf(file, "world %s\n", encoded);
     std::fprintf(file, "color %u %u %u\n",
         static_cast<unsigned>(app->profile.player_color.r),
         static_cast<unsigned>(app->profile.player_color.g),
@@ -340,7 +436,9 @@ static void save_profile(DemoApp* app) {
         const SavedSessionState& session = app->profile.sessions[i];
         if (!session.valid || !session.name[0]) continue;
         encode_text_token(session.name, encoded, sizeof(encoded));
-        std::fprintf(file, "begin %s\n", encoded);
+        char encoded_world[128]{};
+        encode_text_token(session.world_name[0] ? session.world_name : world_playground_name, encoded_world, sizeof(encoded_world));
+        std::fprintf(file, "begin %s %s\n", encoded, encoded_world);
         for (u32 p = 0; p < session.player_count; ++p) {
             const SavedPlayerState& player = session.players[p];
             if (!player.valid) continue;
@@ -377,7 +475,74 @@ static WorldPos demo_pos(u32 dimension, Vector3 meters, float chunk_size) {
     return make_world_pos(dimension, meters, chunk_size);
 }
 
-static WorldPos default_player_spawn(u32 dimension_id, float chunk_size) {
+static u32 hash_u32(u32 v) {
+    v ^= v >> 16;
+    v *= 0x7feb352du;
+    v ^= v >> 15;
+    v *= 0x846ca68bu;
+    v ^= v >> 16;
+    return v;
+}
+
+static u32 hash_coords(i32 x, i32 z, u32 seed) {
+    u32 h = static_cast<u32>(x) * 0x9e3779b9u;
+    h ^= static_cast<u32>(z) * 0x85ebca6bu;
+    h ^= seed * 0xc2b2ae35u;
+    return hash_u32(h);
+}
+
+static float hash01(i32 x, i32 z, u32 seed) {
+    return static_cast<float>(hash_coords(x, z, seed) & 0x00ffffffu) / static_cast<float>(0x01000000u);
+}
+
+static float smoothstep01(float t) {
+    t = clampf(t, 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+static float lerp_float(float a, float b, float t) {
+    return a + (b - a) * t;
+}
+
+static float value_noise(float x, float z, float frequency, u32 seed) {
+    const float sx = x * frequency;
+    const float sz = z * frequency;
+    const i32 ix = static_cast<i32>(std::floor(sx));
+    const i32 iz = static_cast<i32>(std::floor(sz));
+    const float fx = smoothstep01(sx - static_cast<float>(ix));
+    const float fz = smoothstep01(sz - static_cast<float>(iz));
+
+    const float a = hash01(ix, iz, seed);
+    const float b = hash01(ix + 1, iz, seed);
+    const float c = hash01(ix, iz + 1, seed);
+    const float d = hash01(ix + 1, iz + 1, seed);
+    return lerp_float(lerp_float(a, b, fx), lerp_float(c, d, fx), fz);
+}
+
+static float landscape_raw_height(float x, float z) {
+    const float broad = value_noise(x, z, 0.012f, 11) * 2.0f - 1.0f;
+    const float hills = value_noise(x, z, 0.032f, 23) * 2.0f - 1.0f;
+    const float detail = value_noise(x, z, 0.085f, 37) * 2.0f - 1.0f;
+    return broad * 2.6f + hills * 1.35f + detail * 0.35f;
+}
+
+static float landscape_height(float x, float z) {
+    const float spawn_bias = landscape_raw_height(0.0f, 8.0f);
+    return clampf(landscape_raw_height(x, z) - spawn_bias, -0.7f, 5.4f);
+}
+
+static float landscape_tile_height(float x, float z, float chunk_size) {
+    const float tile = chunk_size * 0.5f;
+    const float tx = std::floor(x / tile) * tile + tile * 0.5f;
+    const float tz = std::floor(z / tile) * tile + tile * 0.5f;
+    return landscape_height(tx, tz);
+}
+
+static WorldPos default_player_spawn(const DemoApp* app, u32 dimension_id, float chunk_size) {
+    if (app && is_landscape_world(app->world_name)) {
+        const float y = landscape_tile_height(0.0f, 8.0f, chunk_size) + 0.08f;
+        return demo_pos(dimension_id, {0.0f, y, 8.0f}, chunk_size);
+    }
     return demo_pos(dimension_id, {0.0f, 0.0f, 8.0f}, chunk_size);
 }
 
@@ -433,6 +598,199 @@ static void add_static_box(Dimension* dim, u32 dimension_id, u32 cube_geom, cons
     box.half = size * 0.5f;
     box.color = color;
     physics_add_box(&dim->physics, box);
+}
+
+static void clear_streamed_chunk_records(DemoApp* app) {
+    for (StreamedWorldChunk& chunk : app->streamed_chunks) {
+        chunk = StreamedWorldChunk{};
+    }
+    app->landscape_stream_center_valid = false;
+}
+
+static bool streamed_chunk_matches(const StreamedWorldChunk& chunk, ChunkCoord coord) {
+    return chunk.valid && chunk.coord.x == coord.x && chunk.coord.z == coord.z;
+}
+
+static StreamedWorldChunk* find_streamed_chunk(DemoApp* app, ChunkCoord coord) {
+    for (StreamedWorldChunk& chunk : app->streamed_chunks) {
+        if (streamed_chunk_matches(chunk, coord)) return &chunk;
+    }
+    return nullptr;
+}
+
+static StreamedWorldChunk* acquire_streamed_chunk_record(DemoApp* app, ChunkCoord coord) {
+    if (StreamedWorldChunk* existing = find_streamed_chunk(app, coord)) return existing;
+    for (StreamedWorldChunk& chunk : app->streamed_chunks) {
+        if (chunk.valid) continue;
+        chunk = StreamedWorldChunk{};
+        chunk.valid = true;
+        chunk.coord = coord;
+        return &chunk;
+    }
+    return nullptr;
+}
+
+static void record_streamed_mesh(StreamedWorldChunk* chunk, u32 mesh_id) {
+    if (!chunk || !id_valid(mesh_id) || chunk->mesh_count >= max_streamed_chunk_meshes) return;
+    chunk->meshes[chunk->mesh_count++] = mesh_id;
+}
+
+static void record_streamed_box(StreamedWorldChunk* chunk, u32 box_id) {
+    if (!chunk || !id_valid(box_id) || chunk->box_count >= max_streamed_chunk_boxes) return;
+    chunk->boxes[chunk->box_count++] = box_id;
+}
+
+static void unload_streamed_chunk(Dimension* dim, StreamedWorldChunk* chunk) {
+    if (!dim || !chunk || !chunk->valid) return;
+    for (u32 i = 0; i < chunk->mesh_count; ++i) {
+        dimension_remove_mesh(dim, chunk->meshes[i]);
+    }
+    for (u32 i = 0; i < chunk->box_count; ++i) {
+        physics_remove_box(&dim->physics, chunk->boxes[i]);
+    }
+    *chunk = StreamedWorldChunk{};
+}
+
+static Color landscape_ground_color(float height, float noise) {
+    if (height > 3.8f) return {118, 132, 128, 255};
+    if (height > 2.2f) return {112, 144, 105, 255};
+    if (height < -0.15f) return {96, 132, 126, 255};
+    const unsigned char r = static_cast<unsigned char>(clampf(92.0f + noise * 28.0f, 0.0f, 255.0f));
+    const unsigned char g = static_cast<unsigned char>(clampf(132.0f + noise * 34.0f, 0.0f, 255.0f));
+    const unsigned char b = static_cast<unsigned char>(clampf(86.0f + noise * 20.0f, 0.0f, 255.0f));
+    return {r, g, b, 255};
+}
+
+static void add_streamed_box(DemoApp* app, Dimension* dim, StreamedWorldChunk* chunk, const char* name, Vector3 center, Vector3 size, Color color, bool collider, bool lit, bool draw_edges) {
+    if (!app || !dim || !chunk) return;
+
+    const u32 mesh_id = add_visual_box(dim, app->dimension_id, app->landscape_cube_geom, name, center, size, color);
+    if (MeshInstance* mesh = arena_get(&dim->meshes, mesh_id)) {
+        mesh->lit = lit;
+        mesh->draw_edges = draw_edges;
+    }
+    record_streamed_mesh(chunk, mesh_id);
+
+    if (!collider) return;
+    BoxCollider box{};
+    box.pos = demo_pos(app->dimension_id, center, dim->chunk_size_m);
+    box.half = size * 0.5f;
+    box.color = color;
+    record_streamed_box(chunk, physics_add_box(&dim->physics, box));
+}
+
+static void add_landscape_building(DemoApp* app, Dimension* dim, StreamedWorldChunk* chunk, ChunkCoord coord) {
+    const float chunk_size = dim->chunk_size_m;
+    const float base_x = static_cast<float>(coord.x) * chunk_size + chunk_size * 0.5f;
+    const float base_z = static_cast<float>(coord.z) * chunk_size + chunk_size * 0.5f;
+    const float base_y = landscape_tile_height(base_x, base_z, chunk_size) + 0.08f;
+    const u32 variant = hash_coords(coord.x, coord.z, 221) % 3u;
+
+    const Color wall = variant == 0 ? Color{164, 156, 128, 255} : (variant == 1 ? Color{122, 145, 164, 255} : Color{151, 126, 160, 255});
+    const Color roof = variant == 0 ? Color{93, 103, 118, 255} : (variant == 1 ? Color{92, 87, 104, 255} : Color{116, 90, 96, 255});
+    const Color floor = {132, 120, 94, 255};
+
+    add_streamed_box(app, dim, chunk, "hill house floor", {base_x, base_y - 0.10f, base_z}, {8.4f, 0.32f, 8.4f}, floor, true, true, true);
+    add_streamed_box(app, dim, chunk, "hill house back wall", {base_x, base_y + 1.45f, base_z - 4.05f}, {8.4f, 2.9f, 0.35f}, wall, true, true, true);
+    add_streamed_box(app, dim, chunk, "hill house left wall", {base_x - 4.05f, base_y + 1.45f, base_z}, {0.35f, 2.9f, 8.4f}, wall, true, true, true);
+    add_streamed_box(app, dim, chunk, "hill house right wall", {base_x + 4.05f, base_y + 1.45f, base_z}, {0.35f, 2.9f, 8.4f}, wall, true, true, true);
+    add_streamed_box(app, dim, chunk, "hill house front left", {base_x - 2.75f, base_y + 1.45f, base_z + 4.05f}, {2.6f, 2.9f, 0.35f}, wall, true, true, true);
+    add_streamed_box(app, dim, chunk, "hill house front right", {base_x + 2.75f, base_y + 1.45f, base_z + 4.05f}, {2.6f, 2.9f, 0.35f}, wall, true, true, true);
+    add_streamed_box(app, dim, chunk, "hill house lintel", {base_x, base_y + 2.55f, base_z + 4.05f}, {2.9f, 0.70f, 0.35f}, wall, true, true, true);
+    add_streamed_box(app, dim, chunk, "hill house roof", {base_x, base_y + 3.10f, base_z}, {8.9f, 0.45f, 8.9f}, roof, true, true, true);
+
+    if (variant == 0) {
+        add_streamed_box(app, dim, chunk, "interior table", {base_x - 1.2f, base_y + 0.45f, base_z - 0.8f}, {2.3f, 0.55f, 1.2f}, {112, 82, 58, 255}, true, true, true);
+        add_streamed_box(app, dim, chunk, "interior shelf", {base_x + 3.05f, base_y + 1.0f, base_z - 1.8f}, {0.45f, 1.8f, 3.0f}, {92, 72, 56, 255}, true, true, true);
+        add_streamed_box(app, dim, chunk, "interior crate", {base_x + 1.5f, base_y + 0.35f, base_z + 1.8f}, {0.9f, 0.7f, 0.9f}, {154, 111, 67, 255}, true, true, true);
+    } else if (variant == 1) {
+        add_streamed_box(app, dim, chunk, "interior plinth", {base_x, base_y + 0.65f, base_z - 0.4f}, {1.2f, 1.1f, 1.2f}, {88, 116, 142, 255}, true, true, true);
+        add_streamed_box(app, dim, chunk, "interior bench a", {base_x - 2.2f, base_y + 0.28f, base_z + 1.7f}, {2.6f, 0.35f, 0.7f}, {112, 96, 78, 255}, true, true, true);
+        add_streamed_box(app, dim, chunk, "interior bench b", {base_x + 2.2f, base_y + 0.28f, base_z + 1.7f}, {2.6f, 0.35f, 0.7f}, {112, 96, 78, 255}, true, true, true);
+    } else {
+        add_streamed_box(app, dim, chunk, "interior pillar a", {base_x - 2.4f, base_y + 1.15f, base_z - 2.0f}, {0.45f, 2.3f, 0.45f}, {118, 96, 132, 255}, true, true, true);
+        add_streamed_box(app, dim, chunk, "interior pillar b", {base_x + 2.4f, base_y + 1.15f, base_z - 2.0f}, {0.45f, 2.3f, 0.45f}, {118, 96, 132, 255}, true, true, true);
+        add_streamed_box(app, dim, chunk, "interior low wall", {base_x, base_y + 0.45f, base_z + 0.7f}, {3.4f, 0.75f, 0.45f}, {102, 84, 118, 255}, true, true, true);
+    }
+}
+
+static void generate_landscape_chunk(DemoApp* app, Dimension* dim, ChunkCoord coord) {
+    StreamedWorldChunk* chunk = acquire_streamed_chunk_record(app, coord);
+    if (!chunk || chunk->mesh_count > 0 || chunk->box_count > 0) return;
+
+    const float chunk_size = dim->chunk_size_m;
+    const float tile = chunk_size * 0.5f;
+    const float min_x = static_cast<float>(coord.x) * chunk_size;
+    const float min_z = static_cast<float>(coord.z) * chunk_size;
+    constexpr float terrain_bottom = -2.4f;
+
+    for (u32 z = 0; z < 2; ++z) {
+        for (u32 x = 0; x < 2; ++x) {
+            const float cx = min_x + (static_cast<float>(x) + 0.5f) * tile;
+            const float cz = min_z + (static_cast<float>(z) + 0.5f) * tile;
+            const float top = landscape_height(cx, cz);
+            const float h = fmaxf(0.35f, top - terrain_bottom);
+            const float n = value_noise(cx, cz, 0.11f, 331);
+            add_streamed_box(
+                app,
+                dim,
+                chunk,
+                "landscape terrain",
+                {cx, terrain_bottom + h * 0.5f, cz},
+                {tile + 0.08f, h, tile + 0.08f},
+                landscape_ground_color(top, n),
+                true,
+                true,
+                false);
+        }
+    }
+
+    const i32 near_spawn = std::abs(coord.x) + std::abs(coord.z);
+    const bool has_building = near_spawn > 2 && hash01(coord.x, coord.z, 503) > 0.875f;
+    if (has_building) {
+        const float center_x = min_x + chunk_size * 0.5f;
+        const float center_z = min_z + chunk_size * 0.5f;
+        if (landscape_tile_height(center_x, center_z, chunk_size) > 0.35f) {
+            add_landscape_building(app, dim, chunk, coord);
+        }
+    }
+}
+
+static void ensure_landscape_chunks_around(DemoApp* app, Dimension* dim, WorldPos center) {
+    if (!app || !dim || !app->landscape_streaming) return;
+
+    if (app->landscape_stream_center_valid && chunk_equal(app->landscape_stream_center, center.chunk)) return;
+    app->landscape_stream_center_valid = true;
+    app->landscape_stream_center = center.chunk;
+
+    const i32 radius = dim->render_radius_chunks + 1;
+    const i32 keep_radius = radius + 1;
+    const i32 cx = center.chunk.x;
+    const i32 cz = center.chunk.z;
+
+    for (StreamedWorldChunk& chunk : app->streamed_chunks) {
+        if (!chunk.valid) continue;
+        const i32 dx = chunk.coord.x - cx;
+        const i32 dz = chunk.coord.z - cz;
+        if (dx * dx + dz * dz > keep_radius * keep_radius) {
+            unload_streamed_chunk(dim, &chunk);
+        }
+    }
+
+    for (i32 dz = -radius; dz <= radius; ++dz) {
+        for (i32 dx = -radius; dx <= radius; ++dx) {
+            if (dx * dx + dz * dz > radius * radius) continue;
+            ChunkCoord coord{cx + dx, 0, cz + dz};
+            if (!find_streamed_chunk(app, coord)) {
+                generate_landscape_chunk(app, dim, coord);
+            }
+        }
+    }
+}
+
+static void update_landscape_streaming(DemoApp* app, Dimension* dim, const PlayerEntity* player) {
+    if (!app || !dim || !player || !app->landscape_streaming) return;
+    ensure_landscape_chunks_around(app, dim, player_feet_pos(dim, player));
 }
 
 static u16 add_contour_vertex(MeshGeometry* geometry, Vector3 vertex) {
@@ -542,6 +900,12 @@ static void add_contour_mesh(Dimension* dim, u32 dimension_id, MeshGeometry geom
 
 static const SavedPlayerState* find_current_session_player_state(const DemoApp* app, u64 peer_id) {
     const SavedSessionState* session = find_session(&app->profile, app->session_name);
+    if (session) {
+        const char* session_world = session->world_name[0] ? session->world_name : world_playground_name;
+        if (std::strcmp(canonical_world_name(session_world), canonical_world_name(app->world_name)) != 0) {
+            return nullptr;
+        }
+    }
     return find_saved_player(session, peer_id);
 }
 
@@ -577,7 +941,7 @@ static void apply_saved_player_state(Dimension* dim, u32 dimension_id, PlayerEnt
 static void respawn_player_at_default(DemoApp* app, Dimension* dim, PlayerEntity* player) {
     if (!app || !dim || !player) return;
 
-    WorldPos spawn = default_player_spawn(app->dimension_id, dim->chunk_size_m);
+    WorldPos spawn = default_player_spawn(app, app->dimension_id, dim->chunk_size_m);
     canonicalize(&spawn, dim->chunk_size_m);
     player->velocity = {};
     player->camera_y_offset = 0.0f;
@@ -601,9 +965,38 @@ static void apply_current_session_local_spawn(DemoApp* app, Dimension* dim, Play
     }
 }
 
-void demo_generate_world(DemoApp* app) {
+static void add_local_player_to_generated_world(DemoApp* app, Dimension* dim) {
+    WorldPos local_spawn = default_player_spawn(app, app->dimension_id, dim->chunk_size_m);
+    const SavedPlayerState* saved_local = find_current_session_player_state(app, local_player_peer_id(app));
+    if (saved_local) {
+        local_spawn = saved_player_feet_pos(app->dimension_id, *saved_local);
+        canonicalize(&local_spawn, dim->chunk_size_m);
+    }
+
+    if (app->landscape_streaming) {
+        ensure_landscape_chunks_around(app, dim, local_spawn);
+    }
+
+    app->local_player_id = dimension_add_player(
+        dim,
+        app->player_name,
+        app->player_color,
+        local_spawn,
+        true
+    );
+    if (saved_local) {
+        if (PlayerEntity* player = arena_get(&dim->players, app->local_player_id)) {
+            apply_saved_player_state(dim, app->dimension_id, player, *saved_local, false);
+        }
+    }
+}
+
+static void generate_playground_world(DemoApp* app) {
     world_init(&app->world);
     reset_remote_players(app);
+    clear_streamed_chunk_records(app);
+    app->landscape_streaming = false;
+    app->landscape_cube_geom = invalid_id;
     app->dimension_id = world_add_dimension(&app->world, "default", 16.0f, 64.0f);
     Dimension* dim = world_get_dimension(&app->world, app->dimension_id);
     dim->render_radius_chunks = 7;
@@ -692,24 +1085,50 @@ void demo_generate_world(DemoApp* app) {
     blue.intensity = 0.9f;
     dimension_add_light(dim, blue);
 
-    WorldPos local_spawn = default_player_spawn(app->dimension_id, dim->chunk_size_m);
-    const SavedPlayerState* saved_local = find_current_session_player_state(app, local_player_peer_id(app));
-    if (saved_local) {
-        local_spawn = saved_player_feet_pos(app->dimension_id, *saved_local);
-        canonicalize(&local_spawn, dim->chunk_size_m);
-    }
+    add_local_player_to_generated_world(app, dim);
+}
 
-    app->local_player_id = dimension_add_player(
-        dim,
-        app->player_name,
-        app->player_color,
-        local_spawn,
-        true
-    );
-    if (saved_local) {
-        if (PlayerEntity* player = arena_get(&dim->players, app->local_player_id)) {
-            apply_saved_player_state(dim, app->dimension_id, player, *saved_local, false);
-        }
+static void generate_hills_world(DemoApp* app) {
+    world_init(&app->world);
+    reset_remote_players(app);
+    clear_streamed_chunk_records(app);
+    app->landscape_streaming = true;
+    app->dimension_id = world_add_dimension(&app->world, "hills", 16.0f, 64.0f);
+    Dimension* dim = world_get_dimension(&app->world, app->dimension_id);
+    if (!dim) return;
+
+    dim->render_radius_chunks = 5;
+    dim->quality_render_radius_chunks = 3;
+    dim->ambient = 0.54f;
+    dim->sky_top = {112, 158, 214, 255};
+    dim->sky_bottom = {214, 230, 238, 255};
+    dim->fog_color = {180, 202, 212, 255};
+
+    MeshGeometry cube = make_box_geometry("stream cube", {1.0f, 1.0f, 1.0f});
+    MeshGeometry cube_lod = make_box_geometry("stream cube lod", {0.96f, 0.96f, 0.96f});
+    const u32 cube_lod_id = dimension_add_geometry(dim, cube_lod);
+    cube.lod_geometry = cube_lod_id;
+    app->landscape_cube_geom = dimension_add_geometry(dim, cube);
+
+    LightSource sun{};
+    std::snprintf(sun.name, sizeof(sun.name), "wide hill light");
+    sun.pos = demo_pos(app->dimension_id, {-18.0f, 18.0f, 12.0f}, dim->chunk_size_m);
+    sun.color = {255, 238, 202, 255};
+    sun.radius = 46.0f;
+    sun.intensity = 1.05f;
+    dimension_add_light(dim, sun);
+
+    add_local_player_to_generated_world(app, dim);
+}
+
+void demo_generate_world(DemoApp* app) {
+    char normalized[32]{};
+    copy_world_name(normalized, sizeof(normalized), app->world_name);
+    copy_text(app->world_name, sizeof(app->world_name), normalized);
+    if (is_landscape_world(app->world_name)) {
+        generate_hills_world(app);
+    } else {
+        generate_playground_world(app);
     }
 }
 
@@ -726,12 +1145,18 @@ void demo_init(DemoApp* app) {
     app->dragged_pause_control = pause_control_none;
     app->color_picker_open = false;
     app->sessions_open = false;
+    app->worlds_open = false;
     app->session_scroll = 0;
     app->deleting_session_index = -1;
     app->delete_hold_active = false;
     app->restore_sent_peer_ids.fill(0);
+    app->frame_input = {};
+    app->previous_key_down.fill(false);
+    app->previous_mouse_left_down = false;
+    app->landscape_stream_center_valid = false;
     std::snprintf(app->player_name, sizeof(app->player_name), "player");
     std::snprintf(app->session_name, sizeof(app->session_name), "session");
+    std::snprintf(app->world_name, sizeof(app->world_name), "%s", world_playground_name);
     app->player_color = {90, 180, 255, 255};
     load_profile(app);
     InitWindow(1280, 720, "OL");
@@ -756,6 +1181,10 @@ void demo_draw_menu(DemoApp* app) {
     for (u32 i = 0; i < app->profile.session_count; ++i) {
         session_names[i] = app->profile.sessions[i].name;
     }
+    const char* world_names[world_choice_count]{};
+    for (u32 i = 0; i < world_choice_count; ++i) {
+        world_names[i] = world_choices[i];
+    }
     const float delete_progress = app->delete_hold_active
         ? clampf(static_cast<float>((GetTime() - app->delete_hold_started) / 3.0), 0.0f, 1.0f)
         : 0.0f;
@@ -764,13 +1193,17 @@ void demo_draw_menu(DemoApp* app) {
         &app->renderer,
         app->player_name,
         app->session_name,
+        app->world_name,
         app->net.status,
         app->player_color,
         app->active_menu_field,
         app->color_picker_open,
         app->sessions_open,
+        app->worlds_open,
         session_names,
         app->profile.session_count,
+        world_names,
+        world_choice_count,
         app->session_scroll,
         app->deleting_session_index,
         delete_progress
@@ -785,20 +1218,21 @@ static void enter_game(DemoApp* app) {
     app->blocking_screen_cursor_released = false;
     app->dragged_pause_control = pause_control_none;
     app->sessions_open = false;
+    app->worlds_open = false;
     app->restore_sent_peer_ids.fill(0);
     DisableCursor();
 }
 
 static void host_game(DemoApp* app) {
-    upsert_session(&app->profile, app->session_name);
+    upsert_session(&app->profile, app->session_name, app->world_name);
     mark_profile_dirty(app);
     save_profile(app);
-    net_host(&app->net, app->session_name);
+    net_host(&app->net, app->session_name, app->world_name);
     enter_game(app);
 }
 
 static void join_game(DemoApp* app) {
-    upsert_session(&app->profile, app->session_name);
+    upsert_session(&app->profile, app->session_name, app->world_name);
     mark_profile_dirty(app);
     save_profile(app);
     net_join_from_clipboard(&app->net);
@@ -815,7 +1249,7 @@ static void cancel_session_delete(DemoApp* app) {
 
 static void update_session_delete_hold(DemoApp* app) {
     if (!app->delete_hold_active) return;
-    if (!IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
+    if (!app->frame_input.mouse_left_down) {
         cancel_session_delete(app);
         return;
     }
@@ -823,8 +1257,10 @@ static void update_session_delete_hold(DemoApp* app) {
     const MenuHit hit = demo_menu_hit_test(
         app->color_picker_open,
         app->sessions_open,
+        app->worlds_open,
         app->session_scroll,
         app->profile.session_count,
+        world_choice_count,
         GetMousePosition());
     if (hit.control != menu_control_session_delete || hit.session_index != app->deleting_session_index) {
         cancel_session_delete(app);
@@ -845,37 +1281,59 @@ static void update_menu(DemoApp* app) {
         clamp_session_scroll(app);
     }
 
-    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+    if (app->frame_input.mouse_left_pressed) {
         const MenuHit hit = demo_menu_hit_test(
             app->color_picker_open,
             app->sessions_open,
+            app->worlds_open,
             app->session_scroll,
             app->profile.session_count,
+            world_choice_count,
             GetMousePosition());
         app->dragged_menu_control = menu_control_none;
 
         if (hit.control == menu_control_player) {
             app->active_menu_field = menu_input_player;
             app->sessions_open = false;
+            app->worlds_open = false;
         } else if (hit.control == menu_control_session) {
             app->active_menu_field = menu_input_session;
+            app->worlds_open = false;
         } else if (hit.control == menu_control_session_dropdown) {
             app->sessions_open = !app->sessions_open;
+            app->worlds_open = false;
             app->color_picker_open = false;
             clamp_session_scroll(app);
         } else if (hit.control == menu_control_session_item && hit.session_index >= 0) {
-            copy_text(app->session_name, sizeof(app->session_name), app->profile.sessions[static_cast<u32>(hit.session_index)].name);
+            const SavedSessionState& session = app->profile.sessions[static_cast<u32>(hit.session_index)];
+            copy_text(app->session_name, sizeof(app->session_name), session.name);
             copy_text(app->profile.session_name, sizeof(app->profile.session_name), app->session_name);
+            copy_world_name(app->world_name, sizeof(app->world_name), session.world_name);
+            copy_world_name(app->profile.world_name, sizeof(app->profile.world_name), app->world_name);
             app->active_menu_field = menu_input_session;
             app->sessions_open = false;
+            app->worlds_open = false;
             mark_profile_dirty(app);
         } else if (hit.control == menu_control_session_delete && hit.session_index >= 0) {
             app->delete_hold_active = true;
             app->delete_hold_started = GetTime();
             app->deleting_session_index = hit.session_index;
+        } else if (hit.control == menu_control_world_dropdown) {
+            app->worlds_open = !app->worlds_open;
+            app->sessions_open = false;
+            app->color_picker_open = false;
+        } else if (hit.control == menu_control_world_item && hit.world_index >= 0 && static_cast<u32>(hit.world_index) < world_choice_count) {
+            copy_world_name(app->world_name, sizeof(app->world_name), world_choices[static_cast<u32>(hit.world_index)]);
+            copy_world_name(app->profile.world_name, sizeof(app->profile.world_name), app->world_name);
+            if (SavedSessionState* session = find_session(&app->profile, app->session_name)) {
+                copy_world_name(session->world_name, sizeof(session->world_name), app->world_name);
+            }
+            app->worlds_open = false;
+            mark_profile_dirty(app);
         } else if (hit.control == menu_control_color) {
             app->color_picker_open = !app->color_picker_open;
             app->sessions_open = false;
+            app->worlds_open = false;
         } else if (hit.control == menu_control_host) {
             host_game(app);
             return;
@@ -890,26 +1348,28 @@ static void update_menu(DemoApp* app) {
             app->active_menu_field = menu_input_none;
             if (app->color_picker_open) app->color_picker_open = false;
             if (app->sessions_open) app->sessions_open = false;
+            if (app->worlds_open) app->worlds_open = false;
         }
     }
 
-    if (IsMouseButtonDown(MOUSE_LEFT_BUTTON) &&
+    if (app->frame_input.mouse_left_down &&
         (app->dragged_menu_control == menu_control_color_r ||
          app->dragged_menu_control == menu_control_color_g ||
          app->dragged_menu_control == menu_control_color_b)) {
         set_player_color_component(app, app->dragged_menu_control, demo_menu_color_value_from_mouse(app->dragged_menu_control, GetMousePosition()));
         mark_profile_dirty(app);
     }
-    if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
+    if (app->frame_input.mouse_left_released) {
         app->dragged_menu_control = menu_control_none;
         if (app->delete_hold_active) cancel_session_delete(app);
     }
 
     update_session_delete_hold(app);
 
-    if (IsKeyPressed(KEY_TAB)) {
+    if (app->frame_input.tab_pressed) {
         app->active_menu_field = app->active_menu_field == menu_input_player ? menu_input_session : menu_input_player;
         app->sessions_open = false;
+        app->worlds_open = false;
     }
 
     size_t cap = 0;
@@ -923,7 +1383,7 @@ static void update_menu(DemoApp* app) {
         }
         c = GetCharPressed();
     }
-    if (text && IsKeyPressed(KEY_BACKSPACE)) {
+    if (text && app->frame_input.backspace_pressed) {
         remove_text_char(text);
         text_changed = true;
     }
@@ -932,6 +1392,7 @@ static void update_menu(DemoApp* app) {
         copy_text(app->profile.session_name, sizeof(app->profile.session_name), app->session_name);
         app->profile.player_color = app->player_color;
         app->sessions_open = false;
+        app->worlds_open = false;
         mark_profile_dirty(app);
     }
 }
@@ -941,7 +1402,7 @@ static PlayerEntity* local_player(DemoApp* app, Dimension* dim) {
 }
 
 static void collect_input(DemoApp* app, PlayerEntity* player) {
-    if (!app->mouse_captured && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+    if (!app->mouse_captured && app->frame_input.mouse_left_pressed) {
         app->mouse_captured = true;
         DisableCursor();
     }
@@ -961,7 +1422,7 @@ static void collect_input(DemoApp* app, PlayerEntity* player) {
     if (IsKeyDown(KEY_A)) move.x -= 1.0f;
     if (Vector2Length(move) > 1.0f) move = Vector2Normalize(move);
     app->input.move = move;
-    app->input.jump_pressed = app->input.jump_pressed || IsKeyPressed(KEY_SPACE);
+    app->input.jump_pressed = app->input.jump_pressed || app->frame_input.space_pressed;
     app->input.jump_held = IsKeyDown(KEY_SPACE);
     app->input.sprint = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
     app->input.crouch = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
@@ -1045,8 +1506,10 @@ static float raycast_world(DemoApp* app, Dimension* dim, const PlayerEntity* loc
         const MeshGeometry* geometry = arena_get(&dim->geometries, mesh->geometry);
         if (!geometry) continue;
 
-        Vector3 transformed[max_vertices_per_geometry]{};
         const Vector3 origin = world_delta_meters(mesh->origin, ray_start, dim->chunk_size_m);
+        if (safe_len(origin) - mesh->bounds_radius > best_t) continue;
+
+        Vector3 transformed[max_vertices_per_geometry]{};
         const Matrix basis = matrix_no_translation(mesh->se3);
         for (u32 i = 0; i < geometry->vertex_count; ++i) {
             transformed[i] = Vector3Transform(geometry->vertices[i], basis) + origin;
@@ -1081,7 +1544,7 @@ static float raycast_world(DemoApp* app, Dimension* dim, const PlayerEntity* loc
 static void update_player_aim_ray(DemoApp* app, Dimension* dim, PlayerEntity* player) {
     if (!app || !dim || !player) return;
 
-    player->aim_ray_active = app->mouse_captured && IsMouseButtonDown(MOUSE_LEFT_BUTTON);
+    player->aim_ray_active = app->mouse_captured && app->frame_input.mouse_left_down;
     if (!player->aim_ray_active) return;
 
     const CameraView view = make_player_camera_view(app, dim, player);
@@ -1098,6 +1561,7 @@ static void update_player_aim_ray(DemoApp* app, Dimension* dim, PlayerEntity* pl
 static void fixed_update(DemoApp* app, Dimension* dim, float dt) {
     PlayerEntity* player = local_player(app, dim);
     if (!player) return;
+    update_landscape_streaming(app, dim, player);
     PlayerControllerInput input{};
     input.move = app->input.move;
     input.jump_pressed = app->input.jump_pressed;
@@ -1173,6 +1637,7 @@ static void apply_net_player_state_to_local(DemoApp* app, Dimension* dim, Player
 static void record_current_world_state(DemoApp* app) {
     copy_text(app->profile.player_name, sizeof(app->profile.player_name), app->player_name);
     copy_text(app->profile.session_name, sizeof(app->profile.session_name), app->session_name);
+    copy_world_name(app->profile.world_name, sizeof(app->profile.world_name), app->world_name);
     app->profile.player_color = app->player_color;
 
     if (!app->in_game) return;
@@ -1182,7 +1647,7 @@ static void record_current_world_state(DemoApp* app) {
     PlayerEntity* player = local_player(app, dim);
     if (!dim || !player) return;
 
-    SavedSessionState* session = upsert_session(&app->profile, app->session_name);
+    SavedSessionState* session = upsert_session(&app->profile, app->session_name, app->world_name);
     if (!session) return;
 
     NetPlayerState local = make_net_player_state(app, dim, player);
@@ -1412,6 +1877,8 @@ static void exit_to_first_menu(DemoApp* app) {
     app->dragged_pause_control = pause_control_none;
     app->dragged_menu_control = menu_control_none;
     app->active_menu_field = menu_input_player;
+    app->sessions_open = false;
+    app->worlds_open = false;
     EnableCursor();
     ShowCursor();
 }
@@ -1427,7 +1894,7 @@ static CameraView make_player_camera_view(DemoApp* app, Dimension* dim, const Pl
 
 static void draw_game_scene(DemoApp* app, Dimension* dim, PlayerEntity* player, bool allow_copy_view, bool present_to_screen) {
     CameraView view = make_player_camera_view(app, dim, player);
-    if (allow_copy_view && IsKeyPressed(KEY_O)) copy_current_view_to_clipboard(dim, view);
+    if (allow_copy_view && app->frame_input.o_pressed) copy_current_view_to_clipboard(dim, view);
     renderer_ensure_target(&app->renderer);
     if (present_to_screen) {
         renderer_draw_dimension(&app->renderer, dim, view, app->local_player_id);
@@ -1503,9 +1970,9 @@ static bool update_host_left_screen(DemoApp* app) {
 
     release_cursor_for_blocking_screen(app);
 
-    if ((IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && screen_point_in_rect(GetMousePosition(), modal_leave_rect())) ||
-        IsKeyPressed(KEY_ENTER) ||
-        IsKeyPressed(KEY_ESCAPE)) {
+    if ((app->frame_input.mouse_left_pressed && screen_point_in_rect(GetMousePosition(), modal_leave_rect())) ||
+        app->frame_input.enter_pressed ||
+        app->frame_input.escape_pressed) {
         exit_to_first_menu(app);
         demo_draw_menu(app);
         return true;
@@ -1533,12 +2000,12 @@ static bool update_joining_screen(DemoApp* app, Dimension* dim, PlayerEntity* pl
 }
 
 static void update_pause_menu(DemoApp* app) {
-    if (IsKeyPressed(KEY_ESCAPE)) {
+    if (app->frame_input.escape_pressed) {
         resume_game(app);
         return;
     }
 
-    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+    if (app->frame_input.mouse_left_pressed) {
         const PauseHit hit = demo_pause_hit_test(GetMousePosition());
         app->dragged_pause_control = pause_control_none;
         if (hit.control == pause_control_continue) {
@@ -1554,7 +2021,7 @@ static void update_pause_menu(DemoApp* app) {
         }
     }
 
-    if (IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
+    if (app->frame_input.mouse_left_down) {
         if (app->dragged_pause_control == pause_control_fov) {
             const int fov = demo_pause_value_from_mouse(pause_control_fov, GetMousePosition());
             if (static_cast<int>(floorf(app->renderer.fov + 0.5f)) != fov) {
@@ -1570,39 +2037,62 @@ static void update_pause_menu(DemoApp* app) {
         }
     }
 
-    if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
+    if (app->frame_input.mouse_left_released) {
         app->dragged_pause_control = pause_control_none;
     }
 }
 
 static void tick_game_simulation(DemoApp* app, Dimension* dim, float frame_time) {
-    app->fixed_accum += fminf(frame_time, 0.1f);
+    app->fixed_accum += fminf(frame_time, 0.05f);
     constexpr float fixed_dt = 1.0f / 60.0f;
-    while (app->fixed_accum >= fixed_dt) {
+    u32 steps = 0;
+    while (app->fixed_accum >= fixed_dt && steps < 3) {
         fixed_update(app, dim, fixed_dt);
         app->fixed_accum -= fixed_dt;
+        ++steps;
+    }
+    if (app->fixed_accum >= fixed_dt) {
+        app->fixed_accum = 0.0f;
     }
 }
 
-static void sync_session_from_network(DemoApp* app, Dimension* dim, PlayerEntity* player) {
-    if (!app->net.in_lobby) return;
+static bool sync_session_from_network(DemoApp* app, Dimension* dim, PlayerEntity* player) {
+    if (!app->net.in_lobby) return false;
 
     const bool entered_lobby = app->net.just_entered_lobby;
     const bool session_changed = app->net.session_name[0] &&
         std::strcmp(app->session_name, app->net.session_name) != 0;
+    const bool world_changed = app->net.world_name[0] &&
+        std::strcmp(canonical_world_name(app->world_name), canonical_world_name(app->net.world_name)) != 0;
+
     if (session_changed) {
         copy_text(app->session_name, sizeof(app->session_name), app->net.session_name);
         copy_text(app->profile.session_name, sizeof(app->profile.session_name), app->session_name);
-        upsert_session(&app->profile, app->session_name);
         app->restore_sent_peer_ids.fill(0);
         mark_profile_dirty(app);
-
-        if (app->net.mode == net_client && !app->net.lobby_owner) {
-            apply_current_session_local_spawn(app, dim, player);
-        }
     }
 
-    if (entered_lobby || session_changed) {
+    bool rebuilt_world = false;
+    if (world_changed) {
+        copy_world_name(app->world_name, sizeof(app->world_name), app->net.world_name);
+        copy_world_name(app->profile.world_name, sizeof(app->profile.world_name), app->world_name);
+        app->restore_sent_peer_ids.fill(0);
+        mark_profile_dirty(app);
+        demo_generate_world(app);
+        dim = world_get_dimension(&app->world, app->dimension_id);
+        player = local_player(app, dim);
+        rebuilt_world = true;
+    }
+
+    if (session_changed || world_changed) {
+        upsert_session(&app->profile, app->session_name, app->world_name);
+    }
+
+    if (session_changed && !world_changed && app->net.mode == net_client && !app->net.lobby_owner) {
+        apply_current_session_local_spawn(app, dim, player);
+    }
+
+    if (entered_lobby || session_changed || world_changed) {
         app->net.last_send_time = 0.0;
         app->net.last_reliable_send_time = -1000.0;
     }
@@ -1611,12 +2101,20 @@ static void sync_session_from_network(DemoApp* app, Dimension* dim, PlayerEntity
         app->restore_sent_peer_ids.fill(0);
         app->net.just_entered_lobby = false;
     }
+    return rebuilt_world;
 }
 
-static void update_network_state(DemoApp* app, Dimension* dim, PlayerEntity* player) {
+static bool update_network_state(DemoApp* app, Dimension* dim, PlayerEntity* player) {
     net_set_local_player(&app->net, make_net_player_state(app, dim, player));
     net_update(&app->net);
-    sync_session_from_network(app, dim, player);
+    const bool rebuilt_world = sync_session_from_network(app, dim, player);
+    if (rebuilt_world) {
+        dim = world_get_dimension(&app->world, app->dimension_id);
+        player = local_player(app, dim);
+        if (!dim || !player) return true;
+        net_set_local_player(&app->net, make_net_player_state(app, dim, player));
+    }
+
     NetPlayerState restore{};
     if (net_take_player_restore(&app->net, &restore)) {
         apply_net_player_state_to_local(app, dim, player, restore);
@@ -1624,6 +2122,7 @@ static void update_network_state(DemoApp* app, Dimension* dim, PlayerEntity* pla
     sync_remote_players(app, dim);
     record_current_world_state(app);
     autosave_profile_if_needed(app);
+    return rebuilt_world;
 }
 
 static void update_game(DemoApp* app) {
@@ -1633,8 +2132,9 @@ static void update_game(DemoApp* app) {
 
     if (update_host_left_screen(app)) return;
     if (update_joining_screen(app, dim, player)) return;
+    update_landscape_streaming(app, dim, player);
 
-    if (!app->paused && IsKeyPressed(KEY_ESCAPE)) {
+    if (!app->paused && app->frame_input.escape_pressed) {
         pause_game(app);
         if (only_local_player(app)) {
             app->fixed_accum = 0.0f;
@@ -1642,7 +2142,11 @@ static void update_game(DemoApp* app) {
             tick_game_simulation(app, dim, GetFrameTime());
         }
         player->aim_ray_active = false;
-        update_network_state(app, dim, player);
+        if (update_network_state(app, dim, player)) {
+            dim = world_get_dimension(&app->world, app->dimension_id);
+            player = local_player(app, dim);
+            if (!dim || !player) return;
+        }
         if (update_host_left_screen(app)) return;
         draw_pause(app, dim, player);
         return;
@@ -1658,35 +2162,44 @@ static void update_game(DemoApp* app) {
                 tick_game_simulation(app, dim, GetFrameTime());
             }
             player->aim_ray_active = false;
-            update_network_state(app, dim, player);
+            if (update_network_state(app, dim, player)) {
+                dim = world_get_dimension(&app->world, app->dimension_id);
+                player = local_player(app, dim);
+                if (!dim || !player) return;
+            }
             if (update_host_left_screen(app)) return;
             draw_pause(app, dim, player);
             return;
         }
     }
 
-    if (IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD)) {
+    if (app->frame_input.plus_pressed) {
         const int before = app->renderer.scale_power;
         renderer_change_scale(&app->renderer, 1);
         if (app->renderer.scale_power != before) mark_profile_dirty(app);
     }
-    if (IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_KP_SUBTRACT)) {
+    if (app->frame_input.minus_pressed) {
         const int before = app->renderer.scale_power;
         renderer_change_scale(&app->renderer, -1);
         if (app->renderer.scale_power != before) mark_profile_dirty(app);
     }
-    if (IsKeyPressed(KEY_F3)) app->renderer.draw_physics_debug = !app->renderer.draw_physics_debug;
-    if (IsKeyPressed(KEY_R)) {
+    if (app->frame_input.f3_pressed) app->renderer.draw_physics_debug = !app->renderer.draw_physics_debug;
+    if (app->frame_input.r_pressed) {
         respawn_player_at_default(app, dim, player);
         app->fixed_accum = 0.0f;
         app->input = {};
     }
-    if (IsKeyPressed(KEY_C) && app->net.in_lobby) net_copy_lobby_to_clipboard(&app->net);
+    if (app->frame_input.c_pressed && app->net.in_lobby) net_copy_lobby_to_clipboard(&app->net);
 
     collect_input(app, player);
     tick_game_simulation(app, dim, GetFrameTime());
+    update_landscape_streaming(app, dim, player);
     update_player_aim_ray(app, dim, player);
-    update_network_state(app, dim, player);
+    if (update_network_state(app, dim, player)) {
+        dim = world_get_dimension(&app->world, app->dimension_id);
+        player = local_player(app, dim);
+        if (!dim || !player) return;
+    }
     if (update_host_left_screen(app)) return;
 
     draw_game_scene(app, dim, player, true, true);
@@ -1694,7 +2207,8 @@ static void update_game(DemoApp* app) {
 
 bool demo_update_and_draw(DemoApp* app) {
     if (WindowShouldClose()) return false;
-    if (!app->in_game && IsKeyPressed(KEY_ESCAPE)) return false;
+    capture_frame_input(app);
+    if (!app->in_game && app->frame_input.escape_pressed) return false;
     if (!app->in_game) {
         update_menu(app);
         autosave_profile_if_needed(app);
@@ -1712,7 +2226,7 @@ int demo_run_steam_host_smoke(double timeout_s, double hold_s) {
 
     auto* app = new DemoApp();
     demo_init(app);
-    net_host(&app->net, app->session_name);
+    net_host(&app->net, app->session_name, app->world_name);
     demo_generate_world(app);
 
     const double start = GetTime();
