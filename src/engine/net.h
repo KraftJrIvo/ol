@@ -36,6 +36,11 @@ struct NetPlayerState {
     float current_height = 1.80f;
     Color color = WHITE;
     char name[32]{};
+    bool aim_ray_active = false;
+    ChunkCoord aim_ray_start_chunk{};
+    Vector3 aim_ray_start_local = {0.0f, 0.0f, 0.0f};
+    ChunkCoord aim_ray_end_chunk{};
+    Vector3 aim_ray_end_local = {0.0f, 0.0f, 0.0f};
 };
 
 struct ClientInputPacket {
@@ -58,6 +63,7 @@ struct ServerSnapshotPacket {
 
 struct NetPlayerStatePacket {
     NetPacketType type = net_packet_player_state;
+    u64 lobby_id = 0;
     NetPlayerState player{};
 };
 
@@ -67,12 +73,16 @@ struct NetSession {
     bool in_lobby = false;
     bool lobby_owner = false;
     bool pending = false;
+    bool host_left = false;
     u64 lobby_id = 0;
+    u64 host_peer_id = 0;
     u64 local_peer_id = 0;
     u32 local_tick = 0;
     u32 last_sent_sequence = 0;
     u32 peer_count = 0;
     double last_send_time = 0.0;
+    double last_reliable_send_time = -1000.0;
+    bool just_entered_lobby = false;
     std::array<u64, max_players> peer_ids{};
     std::array<NetPlayerState, max_players> remote_players{};
     std::array<bool, max_players> remote_player_valid{};

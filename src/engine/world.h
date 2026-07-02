@@ -126,6 +126,9 @@ struct PlayerEntity {
     bool is_crouching = false;
     bool connected = true;
     bool local = false;
+    bool aim_ray_active = false;
+    WorldPos aim_ray_start{};
+    WorldPos aim_ray_end{};
 };
 
 struct Dimension {

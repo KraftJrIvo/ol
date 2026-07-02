@@ -7,6 +7,7 @@
 namespace ol {
 
 constexpr u32 render_texture_life = 1;
+constexpr u32 render_texture_cross = 2;
 
 struct CameraView {
     WorldPos anchor{};
@@ -19,11 +20,13 @@ struct RenderState {
     RenderTexture2D target{};
     Texture2D white_texture{};
     Texture2D life_texture{};
+    Texture2D cross_texture{};
     Shader sprite_alpha_shader{};
     Font font{};
     bool target_ready = false;
     bool white_ready = false;
     bool life_ready = false;
+    bool cross_ready = false;
     bool sprite_alpha_shader_ready = false;
     bool font_ready = false;
     int native_w = 0;

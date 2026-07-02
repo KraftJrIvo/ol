@@ -59,6 +59,7 @@ struct DemoApp {
     bool in_game = false;
     bool mouse_captured = false;
     bool paused = false;
+    bool blocking_screen_cursor_released = false;
     u32 active_menu_field = menu_input_player;
     u32 dragged_menu_control = menu_control_none;
     u32 dragged_pause_control = pause_control_none;

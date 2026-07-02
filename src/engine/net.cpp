@@ -111,6 +111,14 @@ static CSteamID steam_lobby_id(const NetSession* net) {
     return CSteamID(static_cast<uint64>(net->lobby_id));
 }
 
+static void steam_accept_peer_session(u64 peer_id) {
+    if (!peer_id || !SteamNetworkingMessages()) return;
+
+    SteamNetworkingIdentity peer_identity{};
+    peer_identity.SetSteamID64(peer_id);
+    SteamNetworkingMessages()->AcceptSessionWithUser(peer_identity);
+}
+
 static void steam_copy_lobby_id_to_clipboard(NetSession* net) {
     if (!net->lobby_id) return;
     char text[32]{};
@@ -143,16 +151,33 @@ static void steam_publish_lobby_metadata(NetSession* net) {
     }
 }
 
+static bool steam_sync_lobby_session_name(NetSession* net) {
+    if (!net->in_lobby || net->lobby_owner || !SteamMatchmaking()) return false;
+
+    const char* name = SteamMatchmaking()->GetLobbyData(steam_lobby_id(net), "name");
+    if (!name || !name[0] || std::strcmp(name, net->session_name) == 0) return false;
+
+    std::snprintf(net->session_name, sizeof(net->session_name), "%s", name);
+    return true;
+}
+
 static void steam_finish_lobby_enter(NetSession* net, CSteamID lobby, bool created_by_local_user) {
     net->pending = false;
     net->in_lobby = true;
     net->lobby_id = lobby.ConvertToUint64();
     net->local_peer_id = SteamUser() ? SteamUser()->GetSteamID().ConvertToUint64() : 0;
+    net->last_send_time = 0.0;
+    net->last_reliable_send_time = -1000.0;
+    net->restore_player_valid = false;
+    net->host_left = false;
+    net->just_entered_lobby = true;
 
     CSteamID owner = SteamMatchmaking() ? SteamMatchmaking()->GetLobbyOwner(lobby) : CSteamID();
     const CSteamID local = SteamUser() ? SteamUser()->GetSteamID() : CSteamID();
+    net->host_peer_id = owner.IsValid() ? owner.ConvertToUint64() : (created_by_local_user ? net->local_peer_id : 0);
     net->lobby_owner = created_by_local_user || (owner.IsValid() && local.IsValid() && owner == local);
     net->mode = net->lobby_owner ? net_hosting : net_client;
+    steam_sync_lobby_session_name(net);
 
     steam_publish_lobby_metadata(net);
     if (net->lobby_owner) {
@@ -202,6 +227,9 @@ static void steam_on_messages_session_request(SteamNetworkingMessagesSessionRequ
 
 static void steam_sync_lobby_members(NetSession* net) {
     if (!net->in_lobby || !SteamMatchmaking() || !SteamUser()) return;
+    if (steam_sync_lobby_session_name(net)) {
+        net->just_entered_lobby = true;
+    }
 
     const CSteamID lobby = steam_lobby_id(net);
     const CSteamID local = SteamUser()->GetSteamID();
@@ -211,8 +239,10 @@ static void steam_sync_lobby_members(NetSession* net) {
     for (int i = 0; i < count; ++i) {
         const CSteamID member = SteamMatchmaking()->GetLobbyMemberByIndex(lobby, i);
         if (!member.IsValid() || member == local) continue;
+        const u64 peer_id = member.ConvertToUint64();
         const u32 before = net->peer_count;
-        net_add_peer(net, member.ConvertToUint64());
+        const u32 peer_idx = net_add_peer(net, peer_id);
+        if (id_valid(peer_idx)) steam_accept_peer_session(peer_id);
         changed = changed || before != net->peer_count;
     }
 
@@ -240,14 +270,23 @@ static void steam_sync_lobby_members(NetSession* net) {
     }
 
     const CSteamID owner = SteamMatchmaking()->GetLobbyOwner(lobby);
-    const bool owner_now = owner.IsValid() && owner == local;
-    if (owner_now != net->lobby_owner) {
-        net->lobby_owner = owner_now;
-        net->mode = owner_now ? net_hosting : net_client;
+    const u64 owner_peer_id = owner.IsValid() ? owner.ConvertToUint64() : 0;
+    if (!net->lobby_owner && net->host_peer_id && owner_peer_id != net->host_peer_id) {
+        net->host_left = true;
+        net->mode = net_client;
+        net->lobby_owner = false;
+        net_status(net, "Host left");
         changed = true;
+    } else {
+        const bool owner_now = owner.IsValid() && owner == local;
+        if (owner_now != net->lobby_owner) {
+            net->lobby_owner = owner_now;
+            net->mode = owner_now ? net_hosting : net_client;
+            changed = true;
+        }
     }
 
-    if (changed) {
+    if (changed && !net->host_left) {
         net_status(net, "Steam lobby %llu | peers %u",
             static_cast<unsigned long long>(net->lobby_id),
             static_cast<unsigned>(net->peer_count));
@@ -265,8 +304,15 @@ static void steam_receive(NetSession* net) {
 
         const u64 from = msg->m_identityPeer.GetSteamID64();
         if (from && from != net->local_peer_id && msg->m_cbSize == static_cast<int>(sizeof(NetPlayerStatePacket))) {
+            steam_accept_peer_session(from);
+
             NetPlayerStatePacket packet{};
             std::memcpy(&packet, msg->m_pData, sizeof(packet));
+            if (packet.lobby_id && net->lobby_id && packet.lobby_id != net->lobby_id) {
+                msg->Release();
+                continue;
+            }
+
             if (packet.type == net_packet_player_state) {
                 const u32 peer_idx = net_add_peer(net, from);
                 if (id_valid(peer_idx)) {
@@ -292,19 +338,26 @@ static void steam_send(NetSession* net) {
     const double now = GetTime();
     if (now - net->last_send_time < (1.0 / 30.0)) return;
     net->last_send_time = now;
+    const bool reliable_heartbeat = now - net->last_reliable_send_time >= 1.0;
+    if (reliable_heartbeat) net->last_reliable_send_time = now;
 
     NetPlayerStatePacket packet{};
+    packet.type = net_packet_player_state;
+    packet.lobby_id = net->lobby_id;
     packet.player = net->local_player;
     packet.player.peer_id = net->local_peer_id;
 
     for (u32 i = 0; i < net->peer_count; ++i) {
         SteamNetworkingIdentity peer_identity{};
         peer_identity.SetSteamID64(net->peer_ids[i]);
+        steam_accept_peer_session(net->peer_ids[i]);
         SteamNetworkingMessages()->SendMessageToUser(
             peer_identity,
             &packet,
             sizeof(packet),
-            k_nSteamNetworkingSend_UnreliableNoDelay | k_nSteamNetworkingSend_AutoRestartBrokenSession,
+            reliable_heartbeat
+                ? (k_nSteamNetworkingSend_Reliable | k_nSteamNetworkingSend_AutoRestartBrokenSession)
+                : (k_nSteamNetworkingSend_UnreliableNoDelay | k_nSteamNetworkingSend_AutoRestartBrokenSession),
             0
         );
     }
@@ -363,7 +416,13 @@ void net_host(NetSession* net, const char* session_name) {
     net->lobby_owner = true;
     net->in_lobby = false;
     net->pending = false;
+    net->host_left = false;
     net->lobby_id = 0;
+    net->host_peer_id = net->local_peer_id;
+    net->last_send_time = 0.0;
+    net->last_reliable_send_time = -1000.0;
+    net->restore_player_valid = false;
+    net->just_entered_lobby = false;
 #ifdef OL_USE_STEAMWORKS
     if (net->steam_available && SteamMatchmaking() && steam_state(net)) {
         steam_state(net)->lobby_metadata_published = false;
@@ -404,7 +463,13 @@ void net_join_from_clipboard(NetSession* net) {
     net->lobby_owner = false;
     net->in_lobby = false;
     net->pending = true;
+    net->host_left = false;
     net->lobby_id = lobby_id;
+    net->host_peer_id = 0;
+    net->last_send_time = 0.0;
+    net->last_reliable_send_time = -1000.0;
+    net->restore_player_valid = false;
+    net->just_entered_lobby = false;
 
     const SteamAPICall_t call = SteamMatchmaking()->JoinLobby(lobby);
     if (call == k_uAPICallInvalid) {
@@ -445,9 +510,14 @@ void net_leave(NetSession* net) {
     net->in_lobby = false;
     net->lobby_owner = false;
     net->pending = false;
+    net->host_left = false;
     net->lobby_id = 0;
+    net->host_peer_id = 0;
     net->local_player_valid = false;
     net->restore_player_valid = false;
+    net->last_send_time = 0.0;
+    net->last_reliable_send_time = -1000.0;
+    net->just_entered_lobby = false;
     net_status(net, net->steam_available ? "Left session" : "Offline build; Steamworks disabled");
 }
 
@@ -474,11 +544,13 @@ void net_send_player_restore(NetSession* net, u64 peer_id, const NetPlayerState&
 
     NetPlayerStatePacket packet{};
     packet.type = net_packet_restore_player;
+    packet.lobby_id = net->lobby_id;
     packet.player = player;
     packet.player.peer_id = peer_id;
 
     SteamNetworkingIdentity peer_identity{};
     peer_identity.SetSteamID64(peer_id);
+    steam_accept_peer_session(peer_id);
     SteamNetworkingMessages()->SendMessageToUser(
         peer_identity,
         &packet,
@@ -508,7 +580,9 @@ void net_update(NetSession* net) {
         if (net->in_lobby) {
             steam_sync_lobby_members(net);
             steam_publish_lobby_metadata(net);
+            if (net->host_left) return;
             steam_receive(net);
+            if (net->just_entered_lobby) return;
             steam_send(net);
         }
     }

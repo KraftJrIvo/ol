@@ -77,6 +77,7 @@ void renderer_init(RenderState* renderer) {
     renderer->white_texture = make_white_texture();
     renderer->white_ready = true;
     renderer->life_texture = load_texture_from_memory(".png", res_life_png, res_life_png_len, &renderer->life_ready);
+    renderer->cross_texture = load_texture_from_memory(".png", res_cross_png, res_cross_png_len, &renderer->cross_ready);
     renderer->sprite_alpha_shader = load_sprite_alpha_shader(&renderer->sprite_alpha_shader_ready);
 
     renderer->font = LoadFontFromMemory(
@@ -105,6 +106,10 @@ void renderer_shutdown(RenderState* renderer) {
     if (renderer->life_ready) {
         UnloadTexture(renderer->life_texture);
         renderer->life_ready = false;
+    }
+    if (renderer->cross_ready) {
+        UnloadTexture(renderer->cross_texture);
+        renderer->cross_ready = false;
     }
     if (renderer->sprite_alpha_shader_ready) {
         UnloadShader(renderer->sprite_alpha_shader);
@@ -622,6 +627,7 @@ static void draw_mesh_instance(RenderState* renderer, Dimension* dim, const Came
 
 static Texture2D sprite_texture(RenderState* renderer, u32 texture_id) {
     if (texture_id == render_texture_life && renderer->life_ready) return renderer->life_texture;
+    if (texture_id == render_texture_cross && renderer->cross_ready) return renderer->cross_texture;
     return renderer->white_texture;
 }
 
@@ -746,13 +752,6 @@ struct PlayerNameTag {
     Vector2 size_px{};
 };
 
-static Vector2 native_mouse_position(const RenderState* renderer) {
-    const Vector2 mouse = GetMousePosition();
-    const float sx = renderer->window_w > 0 ? static_cast<float>(renderer->native_w) / static_cast<float>(renderer->window_w) : 1.0f;
-    const float sy = renderer->window_h > 0 ? static_cast<float>(renderer->native_h) / static_cast<float>(renderer->window_h) : 1.0f;
-    return {mouse.x * sx, mouse.y * sy};
-}
-
 static bool ray_hits_vertical_cylinder(Ray ray, Vector3 bottom, Vector3 top, float radius, float* out_t) {
     const float min_y = fminf(bottom.y, top.y);
     const float max_y = fmaxf(bottom.y, top.y);
@@ -824,7 +823,7 @@ static void draw_name_tag_text(RenderState* renderer, const PlayerNameTag& tag) 
 }
 
 static void draw_players(RenderState* renderer, Dimension* dim, const CameraView& view, u32 local_player_id, const Camera3D& camera, const Matrix& view_matrix, const Matrix& projection_matrix, ScreenEdgeList* edge_list, SceneTriangleList* scene_triangles, PlayerNameTag* hovered_tag) {
-    const Ray hover_ray = GetScreenToWorldRayEx(native_mouse_position(renderer), camera, renderer->native_w, renderer->native_h);
+    const Ray hover_ray = {camera.position, safe_norm(camera.target - camera.position, {0.0f, 0.0f, -1.0f})};
     float closest_hover_t = std::numeric_limits<float>::max();
 
     for (u32 slot = 0; slot < dim->players.count; ++slot) {
@@ -858,6 +857,39 @@ static void draw_players(RenderState* renderer, Dimension* dim, const CameraView
     draw_name_tag_billboard(renderer, camera, hovered_tag);
 }
 
+static void draw_player_aim_rays(RenderState* renderer, Dimension* dim, const CameraView& view, u32 local_player_id, const Camera3D& camera) {
+    if (!dim) return;
+
+    const bool use_shader = renderer->sprite_alpha_shader_ready;
+    for (u32 slot = 0; slot < dim->players.count; ++slot) {
+        const u32 player_id = arena_id_at_slot(&dim->players, slot);
+        const PlayerEntity* player = &dim->players.data[slot];
+        if (player_id == local_player_id || !player->connected || !player->aim_ray_active) continue;
+
+        Color color = player->color;
+        color.a = 235;
+        const Vector3 start = world_delta_meters(player->aim_ray_start, view.anchor, dim->chunk_size_m);
+        const Vector3 end = world_delta_meters(player->aim_ray_end, view.anchor, dim->chunk_size_m);
+        if (Vector3LengthSqr(end - start) < 0.0001f) continue;
+
+        DrawLine3D(start, end, color);
+
+        SpriteInstance marker{};
+        marker.size = {0.32f, 0.32f};
+        marker.texture_id = render_texture_cross;
+        marker.color = color;
+        marker.billboard = billboard_full_3d;
+        const Texture2D texture = sprite_texture(renderer, marker.texture_id);
+        const Rectangle source = {0.0f, 0.0f, static_cast<float>(texture.width), static_cast<float>(texture.height)};
+        const SpriteQuad quad = make_sprite_quad(&marker, end, camera);
+        if (use_shader) BeginShaderMode(renderer->sprite_alpha_shader);
+        else rlDisableDepthMask();
+        draw_textured_sprite_quad(texture, source, quad, marker.color);
+        if (use_shader) EndShaderMode();
+        else rlEnableDepthMask();
+    }
+}
+
 static void draw_physics(RenderState* renderer, Dimension* dim, const CameraView& view) {
     if (!renderer->draw_physics_debug) return;
 
@@ -875,6 +907,12 @@ static void draw_physics(RenderState* renderer, Dimension* dim, const CameraView
         const Vector3 rel = world_delta_meters(light->pos, view.anchor, dim->chunk_size_m);
         DrawSphere(rel, 0.12f, light->color);
     }
+}
+
+static void draw_crosshair(RenderState* renderer) {
+    const Vector2 center = {static_cast<float>(renderer->native_w) * 0.5f, static_cast<float>(renderer->native_h) * 0.5f};
+    DrawCircleV(center, 3.0f, Color{0, 0, 0, 135});
+    DrawCircleV(center, 1.5f, Color{255, 255, 255, 230});
 }
 
 void renderer_render_dimension_to_target(RenderState* renderer, Dimension* dim, const CameraView& view, u32 local_player_id) {
@@ -930,6 +968,7 @@ void renderer_render_dimension_to_target(RenderState* renderer, Dimension* dim, 
 
     PlayerNameTag hovered_tag{};
     draw_players(renderer, dim, view, local_player_id, camera, view_matrix, projection_matrix, &edge_list, &scene_triangles, &hovered_tag);
+    draw_player_aim_rays(renderer, dim, view, local_player_id, camera);
     draw_physics(renderer, dim, view);
 
     EndMode3D();
@@ -937,6 +976,7 @@ void renderer_render_dimension_to_target(RenderState* renderer, Dimension* dim, 
     if (renderer->depth_test_edges) draw_depth_cut_screen_edges(renderer, &edge_list, sprite_occlusion, scene_triangles, camera.position);
     else draw_flat_screen_edges(&edge_list);
     draw_name_tag_text(renderer, hovered_tag);
+    draw_crosshair(renderer);
 
     //char overlay[96]{};
     //std::snprintf(overlay, sizeof(overlay), "scale 1/%d | native %dx%d", 1 << renderer->scale_power, renderer->native_w, renderer->native_h);

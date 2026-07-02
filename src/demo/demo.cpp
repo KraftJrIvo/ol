@@ -6,11 +6,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 namespace ol {
 
 static void record_current_world_state(DemoApp* app);
 static void save_profile(DemoApp* app);
+static CameraView make_player_camera_view(DemoApp* app, Dimension* dim, const PlayerEntity* player);
+static void sync_session_from_network(DemoApp* app, Dimension* dim, PlayerEntity* player);
 
 static void add_text_char(char* text, size_t cap, int c) {
     if (c < 32 || c > 126) return;
@@ -374,6 +377,10 @@ static WorldPos demo_pos(u32 dimension, Vector3 meters, float chunk_size) {
     return make_world_pos(dimension, meters, chunk_size);
 }
 
+static WorldPos default_player_spawn(u32 dimension_id, float chunk_size) {
+    return demo_pos(dimension_id, {0.0f, 0.0f, 8.0f}, chunk_size);
+}
+
 static void reset_remote_players(DemoApp* app) {
     app->remote_peer_ids.fill(0);
     app->remote_player_ids.fill(invalid_id);
@@ -561,9 +568,37 @@ static void apply_saved_player_state(Dimension* dim, u32 dimension_id, PlayerEnt
     player->camera_y_offset = 0.0f;
     player->velocity = {};
     player->is_crouching = player->current_height < player_stand_height_m - 0.01f;
+    player->aim_ray_active = false;
     WorldPos feet = saved_player_feet_pos(dimension_id, state);
     canonicalize(&feet, dim->chunk_size_m);
     player_sync_masses_to_pose(dim, player, feet);
+}
+
+static void respawn_player_at_default(DemoApp* app, Dimension* dim, PlayerEntity* player) {
+    if (!app || !dim || !player) return;
+
+    WorldPos spawn = default_player_spawn(app->dimension_id, dim->chunk_size_m);
+    canonicalize(&spawn, dim->chunk_size_m);
+    player->velocity = {};
+    player->camera_y_offset = 0.0f;
+    player->jump_hold_time = 0.0f;
+    player->grounded_frames = 0;
+    player->jump_variable_active = false;
+    player->on_ground = false;
+    player->aim_ray_active = false;
+    player_sync_masses_to_pose(dim, player, spawn);
+    mark_profile_dirty(app);
+}
+
+static void apply_current_session_local_spawn(DemoApp* app, Dimension* dim, PlayerEntity* player) {
+    if (!app || !dim || !player) return;
+
+    const SavedPlayerState* saved = find_current_session_player_state(app, local_player_peer_id(app));
+    if (saved) {
+        apply_saved_player_state(dim, app->dimension_id, player, *saved, false);
+    } else {
+        respawn_player_at_default(app, dim, player);
+    }
 }
 
 void demo_generate_world(DemoApp* app) {
@@ -657,7 +692,7 @@ void demo_generate_world(DemoApp* app) {
     blue.intensity = 0.9f;
     dimension_add_light(dim, blue);
 
-    WorldPos local_spawn = demo_pos(app->dimension_id, {0.0f, 0.0f, 8.0f}, dim->chunk_size_m);
+    WorldPos local_spawn = default_player_spawn(app->dimension_id, dim->chunk_size_m);
     const SavedPlayerState* saved_local = find_current_session_player_state(app, local_player_peer_id(app));
     if (saved_local) {
         local_spawn = saved_player_feet_pos(app->dimension_id, *saved_local);
@@ -685,6 +720,7 @@ void demo_init(DemoApp* app) {
     app->in_game = false;
     app->mouse_captured = false;
     app->paused = false;
+    app->blocking_screen_cursor_released = false;
     app->active_menu_field = menu_input_player;
     app->dragged_menu_control = menu_control_none;
     app->dragged_pause_control = pause_control_none;
@@ -746,6 +782,7 @@ static void enter_game(DemoApp* app) {
     app->in_game = true;
     app->paused = false;
     app->mouse_captured = true;
+    app->blocking_screen_cursor_released = false;
     app->dragged_pause_control = pause_control_none;
     app->sessions_open = false;
     app->restore_sent_peer_ids.fill(0);
@@ -765,7 +802,9 @@ static void join_game(DemoApp* app) {
     mark_profile_dirty(app);
     save_profile(app);
     net_join_from_clipboard(&app->net);
-    enter_game(app);
+    if (app->net.pending || app->net.in_lobby) {
+        enter_game(app);
+    }
 }
 
 static void cancel_session_delete(DemoApp* app) {
@@ -928,6 +967,134 @@ static void collect_input(DemoApp* app, PlayerEntity* player) {
     app->input.crouch = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
 }
 
+static bool ray_intersects_triangle(Ray ray, Vector3 a, Vector3 b, Vector3 c, float max_dist, float* out_t) {
+    constexpr float eps = 0.00001f;
+    const Vector3 e1 = b - a;
+    const Vector3 e2 = c - a;
+    const Vector3 h = Vector3CrossProduct(ray.direction, e2);
+    const float det = Vector3DotProduct(e1, h);
+    if (std::fabs(det) < eps) return false;
+
+    const float inv_det = 1.0f / det;
+    const Vector3 s = ray.position - a;
+    const float u = inv_det * Vector3DotProduct(s, h);
+    if (u < -eps || u > 1.0f + eps) return false;
+
+    const Vector3 q = Vector3CrossProduct(s, e1);
+    const float v = inv_det * Vector3DotProduct(ray.direction, q);
+    if (v < -eps || u + v > 1.0f + eps) return false;
+
+    const float t = inv_det * Vector3DotProduct(e2, q);
+    if (t <= 0.01f || t >= max_dist) return false;
+    if (out_t) *out_t = t;
+    return true;
+}
+
+static bool ray_hits_player_cylinder(Ray ray, Vector3 bottom, float height, float radius, float max_dist, float* out_t) {
+    const float min_y = bottom.y;
+    const float max_y = bottom.y + height;
+    const float ox = ray.position.x - bottom.x;
+    const float oz = ray.position.z - bottom.z;
+    const float dx = ray.direction.x;
+    const float dz = ray.direction.z;
+    const float radius_sq = radius * radius;
+
+    float best_t = std::numeric_limits<float>::max();
+    const float a = dx * dx + dz * dz;
+    const float b = 2.0f * (ox * dx + oz * dz);
+    const float c = ox * ox + oz * oz - radius_sq;
+    if (a > 0.000001f) {
+        const float disc = b * b - 4.0f * a * c;
+        if (disc >= 0.0f) {
+            const float root = std::sqrt(disc);
+            const float inv = 0.5f / a;
+            const float candidates[2] = {(-b - root) * inv, (-b + root) * inv};
+            for (float t : candidates) {
+                const float y = ray.position.y + ray.direction.y * t;
+                if (t > 0.01f && t < max_dist && y >= min_y && y <= max_y && t < best_t) best_t = t;
+            }
+        }
+    }
+
+    if (std::fabs(ray.direction.y) > 0.000001f) {
+        const float cap_y[2] = {min_y, max_y};
+        for (float y_plane : cap_y) {
+            const float t = (y_plane - ray.position.y) / ray.direction.y;
+            const float x = ray.position.x + ray.direction.x * t - bottom.x;
+            const float z = ray.position.z + ray.direction.z * t - bottom.z;
+            if (t > 0.01f && t < max_dist && x * x + z * z <= radius_sq && t < best_t) best_t = t;
+        }
+    }
+
+    if (best_t == std::numeric_limits<float>::max()) return false;
+    if (out_t) *out_t = best_t;
+    return true;
+}
+
+static float raycast_world(DemoApp* app, Dimension* dim, const PlayerEntity* local, WorldPos ray_start, Vector3 ray_dir, float max_dist) {
+    if (!dim) return max_dist;
+
+    Ray ray{};
+    ray.position = {};
+    ray.direction = ray_dir;
+    float best_t = max_dist;
+
+    for (u32 slot = 0; slot < dim->meshes.count; ++slot) {
+        const MeshInstance* mesh = &dim->meshes.data[slot];
+        if (!mesh->visible) continue;
+        const MeshGeometry* geometry = arena_get(&dim->geometries, mesh->geometry);
+        if (!geometry) continue;
+
+        Vector3 transformed[max_vertices_per_geometry]{};
+        const Vector3 origin = world_delta_meters(mesh->origin, ray_start, dim->chunk_size_m);
+        const Matrix basis = matrix_no_translation(mesh->se3);
+        for (u32 i = 0; i < geometry->vertex_count; ++i) {
+            transformed[i] = Vector3Transform(geometry->vertices[i], basis) + origin;
+        }
+        for (u32 i = 0; i < geometry->triangle_count; ++i) {
+            const Triangle tri = geometry->triangles[i];
+            float t = 0.0f;
+            if (ray_intersects_triangle(ray, transformed[tri.a], transformed[tri.b], transformed[tri.c], best_t, &t)) {
+                best_t = t;
+            }
+        }
+    }
+
+    for (u32 slot = 0; slot < dim->players.count; ++slot) {
+        const u32 player_id = arena_id_at_slot(&dim->players, slot);
+        const PlayerEntity* player = &dim->players.data[slot];
+        if (!player->connected || player == local || player_id == app->local_player_id) continue;
+
+        const WorldPos feet = player_feet_pos(dim, player);
+        const Vector3 bottom = world_delta_meters(feet, ray_start, dim->chunk_size_m);
+        const float radius = fmaxf(0.01f, player->body_radius);
+        const float height = fmaxf(radius * 2.0f, player->current_height);
+        float t = 0.0f;
+        if (ray_hits_player_cylinder(ray, bottom, height, radius, best_t, &t)) {
+            best_t = t;
+        }
+    }
+
+    return best_t;
+}
+
+static void update_player_aim_ray(DemoApp* app, Dimension* dim, PlayerEntity* player) {
+    if (!app || !dim || !player) return;
+
+    player->aim_ray_active = app->mouse_captured && IsMouseButtonDown(MOUSE_LEFT_BUTTON);
+    if (!player->aim_ray_active) return;
+
+    const CameraView view = make_player_camera_view(app, dim, player);
+    const WorldPos ray_start = worldpos_offset(view.anchor, {0.0f, view.eye_height, 0.0f}, dim->chunk_size_m);
+    const Vector3 ray_dir = forward_from_angles(view.yaw, view.pitch);
+    constexpr float max_ray_dist = 64.0f;
+    const float hit_t = raycast_world(app, dim, player, ray_start, ray_dir, max_ray_dist);
+
+    player->aim_ray_start = ray_start;
+    player->aim_ray_end = worldpos_offset(ray_start, ray_dir * hit_t, dim->chunk_size_m);
+    canonicalize(&player->aim_ray_end, dim->chunk_size_m);
+}
+
 static void fixed_update(DemoApp* app, Dimension* dim, float dt) {
     PlayerEntity* player = local_player(app, dim);
     if (!player) return;
@@ -958,6 +1125,11 @@ static NetPlayerState make_net_player_state(DemoApp* app, Dimension* dim, const 
     state.current_height = player->current_height;
     state.color = player->color;
     std::snprintf(state.name, sizeof(state.name), "%s", player->name);
+    state.aim_ray_active = player->aim_ray_active;
+    state.aim_ray_start_chunk = player->aim_ray_start.chunk;
+    state.aim_ray_start_local = player->aim_ray_start.local;
+    state.aim_ray_end_chunk = player->aim_ray_end.chunk;
+    state.aim_ray_end_local = player->aim_ray_end.local;
     return state;
 }
 
@@ -1004,6 +1176,7 @@ static void record_current_world_state(DemoApp* app) {
     app->profile.player_color = app->player_color;
 
     if (!app->in_game) return;
+    if (app->net.mode == net_client && !app->net.lobby_owner) return;
 
     Dimension* dim = world_get_dimension(&app->world, app->dimension_id);
     PlayerEntity* player = local_player(app, dim);
@@ -1192,6 +1365,11 @@ static void sync_remote_players(DemoApp* app, Dimension* dim) {
         remote->is_crouching = remote->current_height < player_stand_height_m - 0.01f;
         remote->connected = true;
         remote->local = false;
+        remote->aim_ray_active = state.aim_ray_active;
+        remote->aim_ray_start = {app->dimension_id, state.aim_ray_start_chunk, state.aim_ray_start_local};
+        remote->aim_ray_end = {app->dimension_id, state.aim_ray_end_chunk, state.aim_ray_end_local};
+        canonicalize(&remote->aim_ray_start, dim->chunk_size_m);
+        canonicalize(&remote->aim_ray_end, dim->chunk_size_m);
         player_sync_masses_to_pose(dim, remote, feet);
 
         if (saved && !restore_already_sent(app, state.peer_id)) {
@@ -1216,6 +1394,7 @@ static void pause_game(DemoApp* app) {
 static void resume_game(DemoApp* app) {
     app->paused = false;
     app->mouse_captured = true;
+    app->blocking_screen_cursor_released = false;
     app->input = {};
     app->dragged_pause_control = pause_control_none;
     DisableCursor();
@@ -1227,12 +1406,14 @@ static void exit_to_first_menu(DemoApp* app) {
     app->in_game = false;
     app->paused = false;
     app->mouse_captured = false;
+    app->blocking_screen_cursor_released = false;
     app->input = {};
     app->fixed_accum = 0.0f;
     app->dragged_pause_control = pause_control_none;
     app->dragged_menu_control = menu_control_none;
     app->active_menu_field = menu_input_player;
     EnableCursor();
+    ShowCursor();
 }
 
 static CameraView make_player_camera_view(DemoApp* app, Dimension* dim, const PlayerEntity* player) {
@@ -1262,6 +1443,93 @@ static void draw_pause(DemoApp* app, Dimension* dim, PlayerEntity* player) {
         static_cast<int>(floorf(app->renderer.fov + 0.5f)),
         app->renderer.scale_power
     });
+}
+
+static bool screen_point_in_rect(Vector2 p, Rectangle r) {
+    return p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height;
+}
+
+static void draw_centered_screen_text(DemoApp* app, const char* text, float y, float size, Color color) {
+    Font font = app->renderer.font_ready ? app->renderer.font : GetFontDefault();
+    const Vector2 measured = MeasureTextEx(font, text, size, 1.0f);
+    DrawTextEx(font, text, {static_cast<float>(GetScreenWidth()) * 0.5f - measured.x * 0.5f, y}, size, 1.0f, color);
+}
+
+static Rectangle modal_leave_rect() {
+    const float w = 180.0f;
+    const float h = 52.0f;
+    return {
+        static_cast<float>(GetScreenWidth()) * 0.5f - w * 0.5f,
+        static_cast<float>(GetScreenHeight()) * 0.5f + 50.0f,
+        w,
+        h
+    };
+}
+
+static void draw_blocking_status_screen(DemoApp* app, const char* title, const char* subtitle, bool leave_button) {
+    BeginDrawing();
+    ClearBackground(BLACK);
+    const float center_y = static_cast<float>(GetScreenHeight()) * 0.5f;
+    draw_centered_screen_text(app, title, center_y - 80.0f, 42.0f, WHITE);
+    if (subtitle && subtitle[0]) {
+        draw_centered_screen_text(app, subtitle, center_y - 22.0f, 22.0f, Color{158, 176, 198, 255});
+    }
+    if (leave_button) {
+        const Rectangle button = modal_leave_rect();
+        const bool hover = screen_point_in_rect(GetMousePosition(), button);
+        DrawRectangleRounded(button, 0.10f, 8, hover ? Color{38, 45, 58, 255} : Color{20, 24, 32, 255});
+        DrawRectangleRoundedLinesEx(button, 0.10f, 8, 2.0f, WHITE);
+        draw_centered_screen_text(app, "leave", button.y + 12.0f, 26.0f, WHITE);
+    }
+    EndDrawing();
+}
+
+static void release_cursor_for_blocking_screen(DemoApp* app) {
+    app->mouse_captured = false;
+    app->paused = false;
+    app->input = {};
+
+    if (!app->blocking_screen_cursor_released) {
+        EnableCursor();
+        ShowCursor();
+        app->blocking_screen_cursor_released = true;
+    } else {
+        ShowCursor();
+    }
+}
+
+static bool update_host_left_screen(DemoApp* app) {
+    if (!app->net.host_left) return false;
+
+    release_cursor_for_blocking_screen(app);
+
+    if ((IsMouseButtonPressed(MOUSE_LEFT_BUTTON) && screen_point_in_rect(GetMousePosition(), modal_leave_rect())) ||
+        IsKeyPressed(KEY_ENTER) ||
+        IsKeyPressed(KEY_ESCAPE)) {
+        exit_to_first_menu(app);
+        demo_draw_menu(app);
+        return true;
+    }
+
+    draw_blocking_status_screen(app, "Host left", "The session ended.", true);
+    return true;
+}
+
+static bool update_joining_screen(DemoApp* app, Dimension* dim, PlayerEntity* player) {
+    if (!(app->net.mode == net_client && app->net.pending)) return false;
+
+    release_cursor_for_blocking_screen(app);
+
+    net_update(&app->net);
+    if (app->net.in_lobby) {
+        sync_session_from_network(app, dim, player);
+        app->mouse_captured = true;
+        app->blocking_screen_cursor_released = false;
+        DisableCursor();
+    }
+
+    draw_blocking_status_screen(app, "Joining", app->net.status, false);
+    return true;
 }
 
 static void update_pause_menu(DemoApp* app) {
@@ -1316,9 +1584,39 @@ static void tick_game_simulation(DemoApp* app, Dimension* dim, float frame_time)
     }
 }
 
+static void sync_session_from_network(DemoApp* app, Dimension* dim, PlayerEntity* player) {
+    if (!app->net.in_lobby) return;
+
+    const bool entered_lobby = app->net.just_entered_lobby;
+    const bool session_changed = app->net.session_name[0] &&
+        std::strcmp(app->session_name, app->net.session_name) != 0;
+    if (session_changed) {
+        copy_text(app->session_name, sizeof(app->session_name), app->net.session_name);
+        copy_text(app->profile.session_name, sizeof(app->profile.session_name), app->session_name);
+        upsert_session(&app->profile, app->session_name);
+        app->restore_sent_peer_ids.fill(0);
+        mark_profile_dirty(app);
+
+        if (app->net.mode == net_client && !app->net.lobby_owner) {
+            apply_current_session_local_spawn(app, dim, player);
+        }
+    }
+
+    if (entered_lobby || session_changed) {
+        app->net.last_send_time = 0.0;
+        app->net.last_reliable_send_time = -1000.0;
+    }
+
+    if (entered_lobby) {
+        app->restore_sent_peer_ids.fill(0);
+        app->net.just_entered_lobby = false;
+    }
+}
+
 static void update_network_state(DemoApp* app, Dimension* dim, PlayerEntity* player) {
     net_set_local_player(&app->net, make_net_player_state(app, dim, player));
     net_update(&app->net);
+    sync_session_from_network(app, dim, player);
     NetPlayerState restore{};
     if (net_take_player_restore(&app->net, &restore)) {
         apply_net_player_state_to_local(app, dim, player, restore);
@@ -1333,6 +1631,9 @@ static void update_game(DemoApp* app) {
     PlayerEntity* player = local_player(app, dim);
     if (!dim || !player) return;
 
+    if (update_host_left_screen(app)) return;
+    if (update_joining_screen(app, dim, player)) return;
+
     if (!app->paused && IsKeyPressed(KEY_ESCAPE)) {
         pause_game(app);
         if (only_local_player(app)) {
@@ -1340,7 +1641,9 @@ static void update_game(DemoApp* app) {
         } else {
             tick_game_simulation(app, dim, GetFrameTime());
         }
+        player->aim_ray_active = false;
         update_network_state(app, dim, player);
+        if (update_host_left_screen(app)) return;
         draw_pause(app, dim, player);
         return;
     } else if (app->paused) {
@@ -1354,7 +1657,9 @@ static void update_game(DemoApp* app) {
             } else {
                 tick_game_simulation(app, dim, GetFrameTime());
             }
+            player->aim_ray_active = false;
             update_network_state(app, dim, player);
+            if (update_host_left_screen(app)) return;
             draw_pause(app, dim, player);
             return;
         }
@@ -1371,11 +1676,18 @@ static void update_game(DemoApp* app) {
         if (app->renderer.scale_power != before) mark_profile_dirty(app);
     }
     if (IsKeyPressed(KEY_F3)) app->renderer.draw_physics_debug = !app->renderer.draw_physics_debug;
+    if (IsKeyPressed(KEY_R)) {
+        respawn_player_at_default(app, dim, player);
+        app->fixed_accum = 0.0f;
+        app->input = {};
+    }
     if (IsKeyPressed(KEY_C) && app->net.in_lobby) net_copy_lobby_to_clipboard(&app->net);
 
     collect_input(app, player);
     tick_game_simulation(app, dim, GetFrameTime());
+    update_player_aim_ray(app, dim, player);
     update_network_state(app, dim, player);
+    if (update_host_left_screen(app)) return;
 
     draw_game_scene(app, dim, player, true, true);
 }
