@@ -19,11 +19,7 @@ partial behavior, or first-pass demo code.
   all lights in the dimension.
 - Real LOD generation/selection. A mesh can reference one LOD mesh, but there is no
   tool/import pipeline, streaming policy, or per-material LOD behavior.
-- General contour extraction for composed objects. Edge rendering is now
-  visibility-cut and drawn in screen space, but the playground's multi-box contours
-  are hand-authored rather than derived automatically from arbitrary adjacent boxes.
-- Sprite billboard modes beyond the current raylib billboard calls. No-billboard and
-  custom shader sprite paths are not complete.
+- Custom shader sprite paths are not complete.
 - Model/mesh import pipeline. Demo meshes are procedural boxes/wedges only.
 
 ## World And Editing

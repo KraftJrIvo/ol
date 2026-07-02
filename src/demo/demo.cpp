@@ -621,19 +621,25 @@ void demo_generate_world(DemoApp* app) {
     add_static_box(dim, app->dimension_id, cube_id, "ramp landing", {7.0f, 0.5f, 10.6f}, {5.0f, 1.0f, 4.0f}, {107, 126, 168, 255}, false, true);
 
     SpriteInstance sprite{};
-    std::snprintf(sprite.name, sizeof(sprite.name), "full billboard");
-    sprite.origin = demo_pos(app->dimension_id, {-2.0f, 2.0f, -7.0f}, dim->chunk_size_m);
     sprite.size = {1.2f, 1.2f};
-    sprite.color = {255, 231, 119, 255};
+    sprite.color = WHITE;
+    sprite.texture_id = render_texture_life;
+
+    std::snprintf(sprite.name, sizeof(sprite.name), "life vertical billboard");
+    sprite.origin = demo_pos(app->dimension_id, {-3.0f, 1.6f, -7.0f}, dim->chunk_size_m);
+    sprite.billboard = billboard_vertical;
+    dimension_add_sprite(dim, sprite);
+
+    std::snprintf(sprite.name, sizeof(sprite.name), "life full billboard");
+    sprite.origin = demo_pos(app->dimension_id, {-1.4f, 1.6f, -7.0f}, dim->chunk_size_m);
     sprite.billboard = billboard_full_3d;
     dimension_add_sprite(dim, sprite);
 
-    SpriteInstance vertical = sprite;
-    std::snprintf(vertical.name, sizeof(vertical.name), "vertical billboard");
-    vertical.origin = demo_pos(app->dimension_id, {1.5f, 1.6f, -7.0f}, dim->chunk_size_m);
-    vertical.color = {120, 214, 186, 255};
-    vertical.billboard = billboard_vertical;
-    dimension_add_sprite(dim, vertical);
+    std::snprintf(sprite.name, sizeof(sprite.name), "life flat sprite");
+    sprite.origin = demo_pos(app->dimension_id, {0.2f, 1.6f, -7.0f}, dim->chunk_size_m);
+    sprite.se3 = MatrixRotateY(25.0f * DEG2RAD);
+    sprite.billboard = billboard_none;
+    dimension_add_sprite(dim, sprite);
 
     LightSource light{};
     std::snprintf(light.name, sizeof(light.name), "warm light");

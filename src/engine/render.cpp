@@ -37,9 +37,47 @@ static Texture2D make_white_texture() {
     return tex;
 }
 
+static Texture2D load_texture_from_memory(const char* file_type, const unsigned char* data, unsigned long long data_len, bool* out_ready) {
+    Texture2D texture{};
+    if (out_ready) *out_ready = false;
+    Image image = LoadImageFromMemory(file_type, data, static_cast<int>(data_len));
+    if (!IsImageValid(image)) return texture;
+
+    texture = LoadTextureFromImage(image);
+    UnloadImage(image);
+    if (IsTextureValid(texture)) {
+        SetTextureFilter(texture, TEXTURE_FILTER_POINT);
+        if (out_ready) *out_ready = true;
+    }
+    return texture;
+}
+
+static Shader load_sprite_alpha_shader(bool* out_ready) {
+    if (out_ready) *out_ready = false;
+
+    static const char* fs =
+        "#version 330\n"
+        "in vec2 fragTexCoord;\n"
+        "in vec4 fragColor;\n"
+        "uniform sampler2D texture0;\n"
+        "uniform vec4 colDiffuse;\n"
+        "out vec4 finalColor;\n"
+        "void main() {\n"
+        "    vec4 texelColor = texture(texture0, fragTexCoord);\n"
+        "    if (texelColor.a < 0.5) discard;\n"
+        "    finalColor = texelColor * colDiffuse * fragColor;\n"
+        "}\n";
+
+    Shader shader = LoadShaderFromMemory(nullptr, fs);
+    if (IsShaderValid(shader) && out_ready) *out_ready = true;
+    return shader;
+}
+
 void renderer_init(RenderState* renderer) {
     renderer->white_texture = make_white_texture();
     renderer->white_ready = true;
+    renderer->life_texture = load_texture_from_memory(".png", res_life_png, res_life_png_len, &renderer->life_ready);
+    renderer->sprite_alpha_shader = load_sprite_alpha_shader(&renderer->sprite_alpha_shader_ready);
 
     renderer->font = LoadFontFromMemory(
         ".ttf",
@@ -63,6 +101,14 @@ void renderer_shutdown(RenderState* renderer) {
     if (renderer->white_ready) {
         UnloadTexture(renderer->white_texture);
         renderer->white_ready = false;
+    }
+    if (renderer->life_ready) {
+        UnloadTexture(renderer->life_texture);
+        renderer->life_ready = false;
+    }
+    if (renderer->sprite_alpha_shader_ready) {
+        UnloadShader(renderer->sprite_alpha_shader);
+        renderer->sprite_alpha_shader_ready = false;
     }
     if (renderer->font_ready) {
         UnloadFont(renderer->font);
@@ -332,6 +378,11 @@ struct DepthBuffer {
     int height = 0;
 };
 
+struct SpriteDepthOcclusion {
+    DepthBuffer scene{};
+    DepthBuffer after_sprites{};
+};
+
 static DepthBuffer read_current_depth_buffer(int width, int height) {
     DepthBuffer depth{};
     if (width <= 0 || height <= 0) return depth;
@@ -343,6 +394,18 @@ static DepthBuffer read_current_depth_buffer(int width, int height) {
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, width, height, GL_DEPTH_COMPONENT, GL_FLOAT, depth.pixels.data());
     return depth;
+}
+
+static bool depth_value_at(const DepthBuffer& depth, Vector2 p, float* out_value) {
+    if (depth.pixels.empty()) return false;
+
+    const int center_x = static_cast<int>(floorf(p.x + 0.5f));
+    const int center_y = static_cast<int>(floorf(p.y + 0.5f));
+    if (center_x < 0 || center_x >= depth.width || center_y < 0 || center_y >= depth.height) return false;
+
+    const int gl_y = depth.height - 1 - center_y;
+    *out_value = depth.pixels[static_cast<size_t>(gl_y) * static_cast<size_t>(depth.width) + static_cast<size_t>(center_x)];
+    return true;
 }
 
 static Vector2 edge_point_at(const ScreenEdge& edge, float t) {
@@ -390,36 +453,37 @@ static bool scene_point_visible(const SceneTriangleList& scene, Vector3 camera_p
     return true;
 }
 
-static bool depth_footprint_visible(const DepthBuffer& depth, Vector2 p, float edge_depth) {
-    if (depth.pixels.empty()) return true;
+static bool sprite_occlusion_visible(const SpriteDepthOcclusion& occlusion, Vector2 p, float edge_depth) {
+    if (occlusion.scene.pixels.empty() || occlusion.after_sprites.pixels.empty()) return true;
 
     constexpr float edge_depth_bias = 0.00035f;
+    constexpr float sprite_depth_delta = 0.00035f;
 
-    const int center_x = static_cast<int>(floorf(p.x + 0.5f));
-    const int center_y = static_cast<int>(floorf(p.y + 0.5f));
-    if (center_x < 0 || center_x >= depth.width || center_y < 0 || center_y >= depth.height) return true;
+    float scene_depth = 1.0f;
+    float sprite_depth = 1.0f;
+    if (!depth_value_at(occlusion.scene, p, &scene_depth)) return true;
+    if (!depth_value_at(occlusion.after_sprites, p, &sprite_depth)) return true;
 
-    const int gl_y = depth.height - 1 - center_y;
-    const float value = depth.pixels[static_cast<size_t>(gl_y) * static_cast<size_t>(depth.width) + static_cast<size_t>(center_x)];
-    return edge_depth <= value + edge_depth_bias;
+    if (sprite_depth >= scene_depth - sprite_depth_delta) return true;
+    return edge_depth <= sprite_depth + edge_depth_bias;
 }
 
-static bool edge_sample_visible(const ScreenEdge& edge, const DepthBuffer& depth, const SceneTriangleList& scene, Vector3 camera_pos, float t) {
+static bool edge_sample_visible(const ScreenEdge& edge, const SpriteDepthOcclusion& sprite_occlusion, const SceneTriangleList& scene, Vector3 camera_pos, float t) {
     if (edge.use_scene_occlusion && !scene.triangles.empty()) {
-        return scene_point_visible(scene, camera_pos, edge_rel_point_at(edge, t));
+        if (!scene_point_visible(scene, camera_pos, edge_rel_point_at(edge, t))) return false;
     }
 
     const Vector2 p = edge_point_at(edge, t);
     const float edge_depth = edge_depth_at(edge, t);
-    return depth_footprint_visible(depth, p, edge_depth);
+    return sprite_occlusion_visible(sprite_occlusion, p, edge_depth);
 }
 
-static float refine_visibility_boundary(const ScreenEdge& edge, const DepthBuffer& depth, const SceneTriangleList& scene, Vector3 camera_pos, float t0, bool visible0, float t1) {
+static float refine_visibility_boundary(const ScreenEdge& edge, const SpriteDepthOcclusion& sprite_occlusion, const SceneTriangleList& scene, Vector3 camera_pos, float t0, bool visible0, float t1) {
     float lo = t0;
     float hi = t1;
     for (int i = 0; i < 8; ++i) {
         const float mid = (lo + hi) * 0.5f;
-        if (edge_sample_visible(edge, depth, scene, camera_pos, mid) == visible0) lo = mid;
+        if (edge_sample_visible(edge, sprite_occlusion, scene, camera_pos, mid) == visible0) lo = mid;
         else hi = mid;
     }
     return (lo + hi) * 0.5f;
@@ -469,10 +533,9 @@ static void draw_edge_intervals(const ScreenEdge& edge, const std::vector<EdgeVi
     }
 }
 
-static void draw_depth_cut_screen_edges(RenderState* renderer, const ScreenEdgeList* list, const SceneTriangleList& scene, Vector3 camera_pos) {
+static void draw_depth_cut_screen_edges(RenderState* renderer, const ScreenEdgeList* list, const SpriteDepthOcclusion& sprite_occlusion, const SceneTriangleList& scene, Vector3 camera_pos) {
     if (!list || list->count == 0) return;
 
-    const DepthBuffer depth = read_current_depth_buffer(renderer->native_w, renderer->native_h);
     rlDisableDepthTest();
     rlEnableDepthMask();
 
@@ -483,15 +546,15 @@ static void draw_depth_cut_screen_edges(RenderState* renderer, const ScreenEdgeL
         const int sample_count = static_cast<int>(fmaxf(1.0f, ceilf(dominant_len)));
 
         float prev_t = 0.0f;
-        bool prev_visible = edge_sample_visible(edge, depth, scene, camera_pos, prev_t);
+        bool prev_visible = edge_sample_visible(edge, sprite_occlusion, scene, camera_pos, prev_t);
         float visible_start = prev_visible ? 0.0f : -1.0f;
         std::vector<EdgeVisibleInterval> intervals;
 
         for (int sample = 1; sample <= sample_count; ++sample) {
             const float t = static_cast<float>(sample) / static_cast<float>(sample_count);
-            const bool visible = edge_sample_visible(edge, depth, scene, camera_pos, t);
+            const bool visible = edge_sample_visible(edge, sprite_occlusion, scene, camera_pos, t);
             if (visible != prev_visible) {
-                const float boundary = refine_visibility_boundary(edge, depth, scene, camera_pos, prev_t, prev_visible, t);
+                const float boundary = refine_visibility_boundary(edge, sprite_occlusion, scene, camera_pos, prev_t, prev_visible, t);
                 if (prev_visible) intervals.push_back({visible_start, boundary});
                 else visible_start = boundary;
             }
@@ -557,21 +620,90 @@ static void draw_mesh_instance(RenderState* renderer, Dimension* dim, const Came
     }
 }
 
-static void draw_sprites(RenderState* renderer, Dimension* dim, const CameraView& view, const Chunk* chunk) {
-    Camera3D camera{};
-    camera.position = {0.0f, view.eye_height, 0.0f};
-    camera.target = camera.position + forward_from_angles(view.yaw, view.pitch);
-    camera.up = {0.0f, 1.0f, 0.0f};
-    camera.fovy = renderer->fov;
-    camera.projection = CAMERA_PERSPECTIVE;
+static Texture2D sprite_texture(RenderState* renderer, u32 texture_id) {
+    if (texture_id == render_texture_life && renderer->life_ready) return renderer->life_texture;
+    return renderer->white_texture;
+}
 
-    Rectangle source = {0.0f, 0.0f, 1.0f, 1.0f};
+struct SpriteQuad {
+    Vector3 bottom_left{};
+    Vector3 bottom_right{};
+    Vector3 top_right{};
+    Vector3 top_left{};
+};
+
+static SpriteQuad make_sprite_quad(const SpriteInstance* sprite, Vector3 center, const Camera3D& camera) {
+    Vector3 right = {1.0f, 0.0f, 0.0f};
+    Vector3 up = {0.0f, 1.0f, 0.0f};
+
+    if (sprite->billboard == billboard_full_3d) {
+        const Vector3 forward = safe_norm(camera.position - center, -safe_norm(camera.target - camera.position, {0.0f, 0.0f, -1.0f}));
+        right = safe_norm(Vector3CrossProduct(camera.up, forward), {1.0f, 0.0f, 0.0f});
+        up = safe_norm(Vector3CrossProduct(forward, right), camera.up);
+    } else if (sprite->billboard == billboard_vertical) {
+        Vector3 to_camera = camera.position - center;
+        to_camera.y = 0.0f;
+        const Vector3 forward = safe_norm(to_camera, {0.0f, 0.0f, 1.0f});
+        up = {0.0f, 1.0f, 0.0f};
+        right = safe_norm(Vector3CrossProduct(up, forward), {1.0f, 0.0f, 0.0f});
+    } else {
+        const Matrix basis = matrix_no_translation(sprite->se3);
+        right = safe_norm(Vector3Transform({1.0f, 0.0f, 0.0f}, basis), {1.0f, 0.0f, 0.0f});
+        up = safe_norm(Vector3Transform({0.0f, 1.0f, 0.0f}, basis), {0.0f, 1.0f, 0.0f});
+    }
+
+    const Vector3 half_right = right * (sprite->size.x * 0.5f);
+    const Vector3 half_up = up * (sprite->size.y * 0.5f);
+    return {
+        center - half_right - half_up,
+        center + half_right - half_up,
+        center + half_right + half_up,
+        center - half_right + half_up
+    };
+}
+
+static void draw_textured_sprite_quad(Texture2D texture, Rectangle source, const SpriteQuad& quad, Color tint) {
+    if (!IsTextureValid(texture)) return;
+
+    const float u0 = source.x / static_cast<float>(texture.width);
+    const float v0 = source.y / static_cast<float>(texture.height);
+    const float u1 = (source.x + source.width) / static_cast<float>(texture.width);
+    const float v1 = (source.y + source.height) / static_cast<float>(texture.height);
+
+    rlDisableBackfaceCulling();
+    rlSetTexture(texture.id);
+    rlBegin(RL_QUADS);
+        rlColor4ub(tint.r, tint.g, tint.b, tint.a);
+        rlTexCoord2f(u0, v1); rlVertex3f(quad.bottom_left.x, quad.bottom_left.y, quad.bottom_left.z);
+        rlTexCoord2f(u1, v1); rlVertex3f(quad.bottom_right.x, quad.bottom_right.y, quad.bottom_right.z);
+        rlTexCoord2f(u1, v0); rlVertex3f(quad.top_right.x, quad.top_right.y, quad.top_right.z);
+        rlTexCoord2f(u0, v0); rlVertex3f(quad.top_left.x, quad.top_left.y, quad.top_left.z);
+    rlEnd();
+    rlSetTexture(0);
+    rlEnableBackfaceCulling();
+}
+
+static void draw_sprites(RenderState* renderer, Dimension* dim, const CameraView& view, const Camera3D& camera, const Chunk* chunk) {
+    if (renderer->sprite_alpha_shader_ready) {
+        BeginShaderMode(renderer->sprite_alpha_shader);
+    } else {
+        rlDisableDepthMask();
+    }
+
     for (u32 i = 0; i < chunk->sprite_count; ++i) {
         const SpriteInstance* sprite = arena_get(&dim->sprites, chunk->sprites[i]);
         if (!sprite || !sprite->visible) continue;
         const Vector3 rel = world_delta_meters(sprite->origin, view.anchor, dim->chunk_size_m);
-        const Vector3 up = sprite->billboard == billboard_vertical ? Vector3{0.0f, 1.0f, 0.0f} : camera.up;
-        DrawBillboardPro(camera, renderer->white_texture, source, rel, up, sprite->size, sprite->size * 0.5f, 0.0f, sprite->color);
+        const Texture2D texture = sprite_texture(renderer, sprite->texture_id);
+        const Rectangle source = {0.0f, 0.0f, static_cast<float>(texture.width), static_cast<float>(texture.height)};
+        const SpriteQuad quad = make_sprite_quad(sprite, rel, camera);
+        draw_textured_sprite_quad(texture, source, quad, sprite->color);
+    }
+
+    if (renderer->sprite_alpha_shader_ready) {
+        EndShaderMode();
+    } else {
+        rlEnableDepthMask();
     }
 }
 
@@ -777,7 +909,23 @@ void renderer_render_dimension_to_target(RenderState* renderer, Dimension* dim, 
         for (u32 i = 0; i < chunk->mesh_count; ++i) {
             draw_mesh_instance(renderer, dim, view, camera, view_matrix, projection_matrix, &edge_list, &scene_triangles, arena_get(&dim->meshes, chunk->meshes[i]), chunk_dist);
         }
-        draw_sprites(renderer, dim, view, chunk);
+    }
+
+    SpriteDepthOcclusion sprite_occlusion{};
+    if (renderer->depth_test_edges) {
+        sprite_occlusion.scene = read_current_depth_buffer(renderer->native_w, renderer->native_h);
+    }
+
+    for (u32 chunk_slot = 0; chunk_slot < dim->chunks.count; ++chunk_slot) {
+        const Chunk* chunk = &dim->chunks.data[chunk_slot];
+        float chunk_dist = 0.0f;
+        if (!chunk_visible(dim, view.anchor.chunk, chunk->coord, &chunk_dist)) continue;
+
+        draw_sprites(renderer, dim, view, camera, chunk);
+    }
+
+    if (renderer->depth_test_edges) {
+        sprite_occlusion.after_sprites = read_current_depth_buffer(renderer->native_w, renderer->native_h);
     }
 
     PlayerNameTag hovered_tag{};
@@ -786,7 +934,7 @@ void renderer_render_dimension_to_target(RenderState* renderer, Dimension* dim, 
 
     EndMode3D();
 
-    if (renderer->depth_test_edges) draw_depth_cut_screen_edges(renderer, &edge_list, scene_triangles, camera.position);
+    if (renderer->depth_test_edges) draw_depth_cut_screen_edges(renderer, &edge_list, sprite_occlusion, scene_triangles, camera.position);
     else draw_flat_screen_edges(&edge_list);
     draw_name_tag_text(renderer, hovered_tag);
 
