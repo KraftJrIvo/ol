@@ -10,7 +10,7 @@ namespace {
 constexpr float menu_base_w = 900.0f;
 constexpr float menu_base_h = 640.0f;
 constexpr float pause_base_w = 760.0f;
-constexpr float pause_base_h = 460.0f;
+constexpr float pause_base_h = 560.0f;
 
 struct MenuLayout {
     float scale = 1.0f;
@@ -36,6 +36,7 @@ struct PauseLayout {
     Vector2 origin{};
     Rectangle fov_slider{};
     Rectangle scale_slider{};
+    Rectangle render_radius_slider{};
     Rectangle continue_button{};
     Rectangle first_menu_button{};
 };
@@ -96,10 +97,11 @@ static PauseLayout make_pause_layout() {
         (screen_w - pause_base_w * layout.scale) * 0.5f,
         (screen_h - pause_base_h * layout.scale) * 0.5f
     };
-    layout.fov_slider = scaled_rect(layout.origin, layout.scale, {150.0f, 125.0f, 460.0f, 8.0f});
-    layout.scale_slider = scaled_rect(layout.origin, layout.scale, {150.0f, 225.0f, 460.0f, 8.0f});
-    layout.continue_button = scaled_rect(layout.origin, layout.scale, {150.0f, 325.0f, 205.0f, 56.0f});
-    layout.first_menu_button = scaled_rect(layout.origin, layout.scale, {405.0f, 325.0f, 205.0f, 56.0f});
+    layout.fov_slider = scaled_rect(layout.origin, layout.scale, {150.0f, 115.0f, 460.0f, 8.0f});
+    layout.scale_slider = scaled_rect(layout.origin, layout.scale, {150.0f, 215.0f, 460.0f, 8.0f});
+    layout.render_radius_slider = scaled_rect(layout.origin, layout.scale, {150.0f, 315.0f, 460.0f, 8.0f});
+    layout.continue_button = scaled_rect(layout.origin, layout.scale, {150.0f, 425.0f, 205.0f, 56.0f});
+    layout.first_menu_button = scaled_rect(layout.origin, layout.scale, {405.0f, 425.0f, 205.0f, 56.0f});
     return layout;
 }
 
@@ -463,6 +465,15 @@ static void draw_pause_controls(const PauseScreen& pause) {
     DrawCircleV(scale_thumb, 11.0f * layout.scale, BLACK);
     DrawCircleLinesV(scale_thumb, 11.0f * layout.scale, WHITE);
 
+    draw_slider(
+        pause.renderer,
+        layout.render_radius_slider,
+        "render radius",
+        pause.render_radius,
+        pause_render_radius_min,
+        pause_render_radius_max,
+        Color{226, 183, 91, 255});
+
     const Vector2 mouse = GetMousePosition();
     draw_button(pause.renderer, layout.continue_button, "continue", point_in_rect(mouse, layout.continue_button));
     draw_button(pause.renderer, layout.first_menu_button, "leave", point_in_rect(mouse, layout.first_menu_button));
@@ -491,6 +502,7 @@ PauseHit demo_pause_hit_test(Vector2 mouse) {
     const PauseLayout layout = make_pause_layout();
     if (point_in_rect(mouse, slider_hit_rect(layout.fov_slider))) return {pause_control_fov};
     if (point_in_rect(mouse, slider_hit_rect(layout.scale_slider))) return {pause_control_scale};
+    if (point_in_rect(mouse, slider_hit_rect(layout.render_radius_slider))) return {pause_control_render_radius};
     if (point_in_rect(mouse, layout.continue_button)) return {pause_control_continue};
     if (point_in_rect(mouse, layout.first_menu_button)) return {pause_control_first_menu};
     return {};
@@ -500,6 +512,7 @@ int demo_pause_value_from_mouse(u32 control, Vector2 mouse) {
     const PauseLayout layout = make_pause_layout();
     if (control == pause_control_fov) return value_from_slider(layout.fov_slider, mouse, 60, 120, true);
     if (control == pause_control_scale) return value_from_slider(layout.scale_slider, mouse, 0, 4, true);
+    if (control == pause_control_render_radius) return value_from_slider(layout.render_radius_slider, mouse, pause_render_radius_min, pause_render_radius_max, true);
     return 0;
 }
 

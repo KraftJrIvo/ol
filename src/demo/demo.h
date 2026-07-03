@@ -7,6 +7,7 @@
 #include "engine/world.h"
 
 #include <array>
+#include <vector>
 
 namespace ol {
 
@@ -63,16 +64,17 @@ struct DemoProfile {
     Color player_color = {90, 180, 255, 255};
     int fov = 90;
     int scale_power = 0;
+    int render_radius_chunks = 0;
     u32 session_count = 0;
     std::array<SavedSessionState, max_saved_sessions> sessions{};
 };
 
-constexpr u32 max_streamed_world_chunks = 192;
 constexpr u32 max_streamed_chunk_meshes = 48;
 constexpr u32 max_streamed_chunk_boxes = 32;
 
 struct StreamedWorldChunk {
     bool valid = false;
+    bool colliders_loaded = false;
     ChunkCoord coord{};
     u32 mesh_count = 0;
     std::array<u32, max_streamed_chunk_meshes> meshes{};
@@ -119,7 +121,7 @@ struct DemoApp {
     u32 landscape_cube_geom = invalid_id;
     bool landscape_stream_center_valid = false;
     ChunkCoord landscape_stream_center{};
-    std::array<StreamedWorldChunk, max_streamed_world_chunks> streamed_chunks{};
+    std::vector<StreamedWorldChunk> streamed_chunks{};
 };
 
 void demo_init(DemoApp* app);

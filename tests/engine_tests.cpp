@@ -1356,6 +1356,32 @@ bool test_player_sprint_jump_from_demo_stairs_to_ramp_does_not_fall_through() {
     return ok;
 }
 
+bool test_hills_radius_32_streams_without_physics_overload() {
+    auto app = std::make_unique<ol::DemoApp>();
+    std::snprintf(app->world_name, sizeof(app->world_name), "hills");
+    std::snprintf(app->session_name, sizeof(app->session_name), "stream-radius-32");
+    app->profile.render_radius_chunks = 32;
+
+    ol::demo_generate_world(app.get());
+    ol::Dimension* dim = ol::world_get_dimension(&app->world, app->dimension_id);
+
+    ol::u32 valid_chunks = 0;
+    ol::u32 collider_chunks = 0;
+    for (const ol::StreamedWorldChunk& chunk : app->streamed_chunks) {
+        if (!chunk.valid) continue;
+        ++valid_chunks;
+        if (chunk.colliders_loaded) ++collider_chunks;
+    }
+
+    bool ok = expect_true(dim != nullptr, "Hills radius 32 generated a dimension");
+    ok = expect_true(dim && dim->render_radius_chunks == 32, "Hills radius 32 applied profile render radius") && ok;
+    ok = expect_true(valid_chunks > 3000, "Hills radius 32 streams well beyond the old fixed chunk cap") && ok;
+    ok = expect_true(dim && dim->meshes.count > 12000, "Hills radius 32 creates the visual terrain radius") && ok;
+    ok = expect_true(collider_chunks > 20 && collider_chunks < 40, "Hills radius 32 keeps colliders local to the player") && ok;
+    ok = expect_true(dim && dim->physics.boxes.count > 80 && dim->physics.boxes.count < 600, "Hills radius 32 does not overload physics boxes") && ok;
+    return ok;
+}
+
 bool run_physics_tests() {
     bool ok = true;
     auto run = [&](const char* name, bool (*fn)()) {
@@ -1405,6 +1431,7 @@ bool run_physics_tests() {
     run("player_uncrouches_on_tunnel_roof", test_player_uncrouches_on_tunnel_roof);
     run("player_rotated_box_ramp_transition", test_player_rotated_box_ramp_transition);
     run("player_sprint_jump_from_demo_stairs_to_ramp_does_not_fall_through", test_player_sprint_jump_from_demo_stairs_to_ramp_does_not_fall_through);
+    run("hills_radius_32_streams_without_physics_overload", test_hills_radius_32_streams_without_physics_overload);
     if (ok) std::printf("physics tests passed\n");
     return ok;
 }

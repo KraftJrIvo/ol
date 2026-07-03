@@ -7,6 +7,8 @@ namespace ol {
 constexpr u32 max_saved_sessions = 24;
 constexpr u32 max_visible_session_rows = 5;
 constexpr u32 max_visible_world_rows = 4;
+constexpr int pause_render_radius_min = 2;
+constexpr int pause_render_radius_max = 32;
 
 enum MenuInputField : u32 {
     menu_input_none,
@@ -35,6 +37,7 @@ enum PauseControl : u32 {
     pause_control_none,
     pause_control_fov,
     pause_control_scale,
+    pause_control_render_radius,
     pause_control_continue,
     pause_control_first_menu
 };
@@ -63,6 +66,7 @@ struct PauseScreen {
     RenderState* renderer = nullptr;
     int fov = 90;
     int scale_power = 0;
+    int render_radius = 6;
 };
 
 struct MenuHit {

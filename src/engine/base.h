@@ -17,9 +17,9 @@ using f64 = double;
 constexpr u32 invalid_id = 0xffffffffu;
 
 constexpr u32 max_dimensions = 8;
-constexpr u32 max_chunks = 2048;
+constexpr u32 max_chunks = 8192;
 constexpr u32 max_mesh_geometries = 256;
-constexpr u32 max_meshes = 4096;
+constexpr u32 max_meshes = 32768;
 constexpr u32 max_sprites = 1024;
 constexpr u32 max_lights = 512;
 constexpr u32 max_material_layers = 8;

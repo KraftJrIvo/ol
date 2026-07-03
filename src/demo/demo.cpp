@@ -121,12 +121,43 @@ static bool is_landscape_world(const char* name) {
     return std::strcmp(canonical_world_name(name), world_hills_name) == 0;
 }
 
+static int default_quality_radius_for_world(const char* name) {
+    return is_landscape_world(name) ? 3 : 4;
+}
+
+static int clamped_render_radius(int radius) {
+    return static_cast<int>(clampf(static_cast<float>(radius), static_cast<float>(pause_render_radius_min), static_cast<float>(pause_render_radius_max)));
+}
+
 static void copy_world_name(char* dst, size_t cap, const char* src) {
     copy_text(dst, cap, canonical_world_name(src));
 }
 
 static void mark_profile_dirty(DemoApp* app) {
     app->profile_dirty = true;
+}
+
+static void set_dimension_render_radius(DemoApp* app, Dimension* dim, int radius, bool persist) {
+    if (!dim) return;
+    const int clamped = clamped_render_radius(radius);
+    if (dim->render_radius_chunks == clamped && (!persist || app->profile.render_radius_chunks == clamped)) return;
+
+    dim->render_radius_chunks = clamped;
+    dim->quality_render_radius_chunks = static_cast<i32>(fminf(
+        static_cast<float>(default_quality_radius_for_world(app->world_name)),
+        static_cast<float>(dim->render_radius_chunks)));
+    if (app->landscape_streaming) {
+        app->landscape_stream_center_valid = false;
+    }
+    if (persist) {
+        app->profile.render_radius_chunks = clamped;
+        mark_profile_dirty(app);
+    }
+}
+
+static void apply_profile_render_radius(DemoApp* app, Dimension* dim) {
+    if (!app || !dim || app->profile.render_radius_chunks <= 0) return;
+    set_dimension_render_radius(app, dim, app->profile.render_radius_chunks, false);
 }
 
 static u64 local_player_peer_id(const DemoApp* app) {
@@ -347,6 +378,9 @@ static void load_profile(DemoApp* app) {
         } else if (std::strcmp(cmd, "scale") == 0) {
             const char* value = std::strtok(nullptr, " \t\r\n");
             if (value) app->profile.scale_power = static_cast<int>(clampf(static_cast<float>(std::atoi(value)), 0.0f, 4.0f));
+        } else if (std::strcmp(cmd, "render_radius") == 0) {
+            const char* value = std::strtok(nullptr, " \t\r\n");
+            if (value) app->profile.render_radius_chunks = clamped_render_radius(std::atoi(value));
         } else if (std::strcmp(cmd, "begin") == 0) {
             char name[32]{};
             decode_text_token(std::strtok(nullptr, " \t\r\n"), name, sizeof(name));
@@ -413,6 +447,9 @@ static void save_profile(DemoApp* app) {
     app->profile.player_color = app->player_color;
     app->profile.fov = static_cast<int>(clampf(floorf(app->renderer.fov + 0.5f), 60.0f, 120.0f));
     app->profile.scale_power = static_cast<int>(clampf(static_cast<float>(app->renderer.scale_power), 0.0f, 4.0f));
+    if (app->profile.render_radius_chunks > 0) {
+        app->profile.render_radius_chunks = clamped_render_radius(app->profile.render_radius_chunks);
+    }
 
     std::FILE* file = std::fopen("ol_state.txt", "w");
     if (!file) return;
@@ -431,6 +468,9 @@ static void save_profile(DemoApp* app) {
         static_cast<unsigned>(app->profile.player_color.b));
     std::fprintf(file, "fov %d\n", app->profile.fov);
     std::fprintf(file, "scale %d\n", app->profile.scale_power);
+    if (app->profile.render_radius_chunks > 0) {
+        std::fprintf(file, "render_radius %d\n", app->profile.render_radius_chunks);
+    }
 
     for (u32 i = 0; i < app->profile.session_count; ++i) {
         const SavedSessionState& session = app->profile.sessions[i];
@@ -601,9 +641,8 @@ static void add_static_box(Dimension* dim, u32 dimension_id, u32 cube_geom, cons
 }
 
 static void clear_streamed_chunk_records(DemoApp* app) {
-    for (StreamedWorldChunk& chunk : app->streamed_chunks) {
-        chunk = StreamedWorldChunk{};
-    }
+    app->streamed_chunks.clear();
+    app->streamed_chunks.reserve(512);
     app->landscape_stream_center_valid = false;
 }
 
@@ -627,7 +666,11 @@ static StreamedWorldChunk* acquire_streamed_chunk_record(DemoApp* app, ChunkCoor
         chunk.coord = coord;
         return &chunk;
     }
-    return nullptr;
+    app->streamed_chunks.push_back(StreamedWorldChunk{});
+    StreamedWorldChunk& chunk = app->streamed_chunks.back();
+    chunk.valid = true;
+    chunk.coord = coord;
+    return &chunk;
 }
 
 static void record_streamed_mesh(StreamedWorldChunk* chunk, u32 mesh_id) {
@@ -640,14 +683,22 @@ static void record_streamed_box(StreamedWorldChunk* chunk, u32 box_id) {
     chunk->boxes[chunk->box_count++] = box_id;
 }
 
+static void unload_streamed_chunk_colliders(Dimension* dim, StreamedWorldChunk* chunk) {
+    if (!dim || !chunk || !chunk->valid) return;
+    for (u32 i = 0; i < chunk->box_count; ++i) {
+        physics_remove_box(&dim->physics, chunk->boxes[i]);
+        chunk->boxes[i] = invalid_id;
+    }
+    chunk->box_count = 0;
+    chunk->colliders_loaded = false;
+}
+
 static void unload_streamed_chunk(Dimension* dim, StreamedWorldChunk* chunk) {
     if (!dim || !chunk || !chunk->valid) return;
     for (u32 i = 0; i < chunk->mesh_count; ++i) {
         dimension_remove_mesh(dim, chunk->meshes[i]);
     }
-    for (u32 i = 0; i < chunk->box_count; ++i) {
-        physics_remove_box(&dim->physics, chunk->boxes[i]);
-    }
+    unload_streamed_chunk_colliders(dim, chunk);
     *chunk = StreamedWorldChunk{};
 }
 
@@ -679,7 +730,7 @@ static void add_streamed_box(DemoApp* app, Dimension* dim, StreamedWorldChunk* c
     record_streamed_box(chunk, physics_add_box(&dim->physics, box));
 }
 
-static void add_landscape_building(DemoApp* app, Dimension* dim, StreamedWorldChunk* chunk, ChunkCoord coord) {
+static void add_landscape_building(DemoApp* app, Dimension* dim, StreamedWorldChunk* chunk, ChunkCoord coord, bool collider) {
     const float chunk_size = dim->chunk_size_m;
     const float base_x = static_cast<float>(coord.x) * chunk_size + chunk_size * 0.5f;
     const float base_z = static_cast<float>(coord.z) * chunk_size + chunk_size * 0.5f;
@@ -690,33 +741,34 @@ static void add_landscape_building(DemoApp* app, Dimension* dim, StreamedWorldCh
     const Color roof = variant == 0 ? Color{93, 103, 118, 255} : (variant == 1 ? Color{92, 87, 104, 255} : Color{116, 90, 96, 255});
     const Color floor = {132, 120, 94, 255};
 
-    add_streamed_box(app, dim, chunk, "hill house floor", {base_x, base_y - 0.10f, base_z}, {8.4f, 0.32f, 8.4f}, floor, true, true, true);
-    add_streamed_box(app, dim, chunk, "hill house back wall", {base_x, base_y + 1.45f, base_z - 4.05f}, {8.4f, 2.9f, 0.35f}, wall, true, true, true);
-    add_streamed_box(app, dim, chunk, "hill house left wall", {base_x - 4.05f, base_y + 1.45f, base_z}, {0.35f, 2.9f, 8.4f}, wall, true, true, true);
-    add_streamed_box(app, dim, chunk, "hill house right wall", {base_x + 4.05f, base_y + 1.45f, base_z}, {0.35f, 2.9f, 8.4f}, wall, true, true, true);
-    add_streamed_box(app, dim, chunk, "hill house front left", {base_x - 2.75f, base_y + 1.45f, base_z + 4.05f}, {2.6f, 2.9f, 0.35f}, wall, true, true, true);
-    add_streamed_box(app, dim, chunk, "hill house front right", {base_x + 2.75f, base_y + 1.45f, base_z + 4.05f}, {2.6f, 2.9f, 0.35f}, wall, true, true, true);
-    add_streamed_box(app, dim, chunk, "hill house lintel", {base_x, base_y + 2.55f, base_z + 4.05f}, {2.9f, 0.70f, 0.35f}, wall, true, true, true);
-    add_streamed_box(app, dim, chunk, "hill house roof", {base_x, base_y + 3.10f, base_z}, {8.9f, 0.45f, 8.9f}, roof, true, true, true);
+    add_streamed_box(app, dim, chunk, "hill house floor", {base_x, base_y - 0.10f, base_z}, {8.4f, 0.32f, 8.4f}, floor, collider, true, true);
+    add_streamed_box(app, dim, chunk, "hill house back wall", {base_x, base_y + 1.45f, base_z - 4.05f}, {8.4f, 2.9f, 0.35f}, wall, collider, true, true);
+    add_streamed_box(app, dim, chunk, "hill house left wall", {base_x - 4.05f, base_y + 1.45f, base_z}, {0.35f, 2.9f, 8.4f}, wall, collider, true, true);
+    add_streamed_box(app, dim, chunk, "hill house right wall", {base_x + 4.05f, base_y + 1.45f, base_z}, {0.35f, 2.9f, 8.4f}, wall, collider, true, true);
+    add_streamed_box(app, dim, chunk, "hill house front left", {base_x - 2.75f, base_y + 1.45f, base_z + 4.05f}, {2.6f, 2.9f, 0.35f}, wall, collider, true, true);
+    add_streamed_box(app, dim, chunk, "hill house front right", {base_x + 2.75f, base_y + 1.45f, base_z + 4.05f}, {2.6f, 2.9f, 0.35f}, wall, collider, true, true);
+    add_streamed_box(app, dim, chunk, "hill house lintel", {base_x, base_y + 2.55f, base_z + 4.05f}, {2.9f, 0.70f, 0.35f}, wall, collider, true, true);
+    add_streamed_box(app, dim, chunk, "hill house roof", {base_x, base_y + 3.10f, base_z}, {8.9f, 0.45f, 8.9f}, roof, collider, true, true);
 
     if (variant == 0) {
-        add_streamed_box(app, dim, chunk, "interior table", {base_x - 1.2f, base_y + 0.45f, base_z - 0.8f}, {2.3f, 0.55f, 1.2f}, {112, 82, 58, 255}, true, true, true);
-        add_streamed_box(app, dim, chunk, "interior shelf", {base_x + 3.05f, base_y + 1.0f, base_z - 1.8f}, {0.45f, 1.8f, 3.0f}, {92, 72, 56, 255}, true, true, true);
-        add_streamed_box(app, dim, chunk, "interior crate", {base_x + 1.5f, base_y + 0.35f, base_z + 1.8f}, {0.9f, 0.7f, 0.9f}, {154, 111, 67, 255}, true, true, true);
+        add_streamed_box(app, dim, chunk, "interior table", {base_x - 1.2f, base_y + 0.45f, base_z - 0.8f}, {2.3f, 0.55f, 1.2f}, {112, 82, 58, 255}, collider, true, true);
+        add_streamed_box(app, dim, chunk, "interior shelf", {base_x + 3.05f, base_y + 1.0f, base_z - 1.8f}, {0.45f, 1.8f, 3.0f}, {92, 72, 56, 255}, collider, true, true);
+        add_streamed_box(app, dim, chunk, "interior crate", {base_x + 1.5f, base_y + 0.35f, base_z + 1.8f}, {0.9f, 0.7f, 0.9f}, {154, 111, 67, 255}, collider, true, true);
     } else if (variant == 1) {
-        add_streamed_box(app, dim, chunk, "interior plinth", {base_x, base_y + 0.65f, base_z - 0.4f}, {1.2f, 1.1f, 1.2f}, {88, 116, 142, 255}, true, true, true);
-        add_streamed_box(app, dim, chunk, "interior bench a", {base_x - 2.2f, base_y + 0.28f, base_z + 1.7f}, {2.6f, 0.35f, 0.7f}, {112, 96, 78, 255}, true, true, true);
-        add_streamed_box(app, dim, chunk, "interior bench b", {base_x + 2.2f, base_y + 0.28f, base_z + 1.7f}, {2.6f, 0.35f, 0.7f}, {112, 96, 78, 255}, true, true, true);
+        add_streamed_box(app, dim, chunk, "interior plinth", {base_x, base_y + 0.65f, base_z - 0.4f}, {1.2f, 1.1f, 1.2f}, {88, 116, 142, 255}, collider, true, true);
+        add_streamed_box(app, dim, chunk, "interior bench a", {base_x - 2.2f, base_y + 0.28f, base_z + 1.7f}, {2.6f, 0.35f, 0.7f}, {112, 96, 78, 255}, collider, true, true);
+        add_streamed_box(app, dim, chunk, "interior bench b", {base_x + 2.2f, base_y + 0.28f, base_z + 1.7f}, {2.6f, 0.35f, 0.7f}, {112, 96, 78, 255}, collider, true, true);
     } else {
-        add_streamed_box(app, dim, chunk, "interior pillar a", {base_x - 2.4f, base_y + 1.15f, base_z - 2.0f}, {0.45f, 2.3f, 0.45f}, {118, 96, 132, 255}, true, true, true);
-        add_streamed_box(app, dim, chunk, "interior pillar b", {base_x + 2.4f, base_y + 1.15f, base_z - 2.0f}, {0.45f, 2.3f, 0.45f}, {118, 96, 132, 255}, true, true, true);
-        add_streamed_box(app, dim, chunk, "interior low wall", {base_x, base_y + 0.45f, base_z + 0.7f}, {3.4f, 0.75f, 0.45f}, {102, 84, 118, 255}, true, true, true);
+        add_streamed_box(app, dim, chunk, "interior pillar a", {base_x - 2.4f, base_y + 1.15f, base_z - 2.0f}, {0.45f, 2.3f, 0.45f}, {118, 96, 132, 255}, collider, true, true);
+        add_streamed_box(app, dim, chunk, "interior pillar b", {base_x + 2.4f, base_y + 1.15f, base_z - 2.0f}, {0.45f, 2.3f, 0.45f}, {118, 96, 132, 255}, collider, true, true);
+        add_streamed_box(app, dim, chunk, "interior low wall", {base_x, base_y + 0.45f, base_z + 0.7f}, {3.4f, 0.75f, 0.45f}, {102, 84, 118, 255}, collider, true, true);
     }
 }
 
-static void generate_landscape_chunk(DemoApp* app, Dimension* dim, ChunkCoord coord) {
+static void generate_landscape_chunk(DemoApp* app, Dimension* dim, ChunkCoord coord, bool collidable) {
     StreamedWorldChunk* chunk = acquire_streamed_chunk_record(app, coord);
     if (!chunk || chunk->mesh_count > 0 || chunk->box_count > 0) return;
+    chunk->colliders_loaded = collidable;
 
     const float chunk_size = dim->chunk_size_m;
     const float tile = chunk_size * 0.5f;
@@ -739,7 +791,7 @@ static void generate_landscape_chunk(DemoApp* app, Dimension* dim, ChunkCoord co
                 {cx, terrain_bottom + h * 0.5f, cz},
                 {tile + 0.08f, h, tile + 0.08f},
                 landscape_ground_color(top, n),
-                true,
+                collidable,
                 true,
                 false);
         }
@@ -751,7 +803,7 @@ static void generate_landscape_chunk(DemoApp* app, Dimension* dim, ChunkCoord co
         const float center_x = min_x + chunk_size * 0.5f;
         const float center_z = min_z + chunk_size * 0.5f;
         if (landscape_tile_height(center_x, center_z, chunk_size) > 0.35f) {
-            add_landscape_building(app, dim, chunk, coord);
+            add_landscape_building(app, dim, chunk, coord, collidable);
         }
     }
 }
@@ -765,15 +817,26 @@ static void ensure_landscape_chunks_around(DemoApp* app, Dimension* dim, WorldPo
 
     const i32 radius = dim->render_radius_chunks + 1;
     const i32 keep_radius = radius + 1;
+    constexpr i32 landscape_collider_radius_chunks = 3;
+    const i32 collider_radius = radius < landscape_collider_radius_chunks ? radius : landscape_collider_radius_chunks;
+    const i32 collider_radius_sq = collider_radius * collider_radius;
     const i32 cx = center.chunk.x;
     const i32 cz = center.chunk.z;
+    const i32 keep_diameter = keep_radius * 2 + 1;
+    const u32 reserve_count = static_cast<u32>(keep_diameter * keep_diameter);
+    if (app->streamed_chunks.capacity() < reserve_count) {
+        app->streamed_chunks.reserve(reserve_count);
+    }
 
     for (StreamedWorldChunk& chunk : app->streamed_chunks) {
         if (!chunk.valid) continue;
         const i32 dx = chunk.coord.x - cx;
         const i32 dz = chunk.coord.z - cz;
-        if (dx * dx + dz * dz > keep_radius * keep_radius) {
+        const i32 dist_sq = dx * dx + dz * dz;
+        if (dist_sq > keep_radius * keep_radius) {
             unload_streamed_chunk(dim, &chunk);
+        } else if (dist_sq > collider_radius_sq && chunk.colliders_loaded) {
+            unload_streamed_chunk_colliders(dim, &chunk);
         }
     }
 
@@ -781,8 +844,13 @@ static void ensure_landscape_chunks_around(DemoApp* app, Dimension* dim, WorldPo
         for (i32 dx = -radius; dx <= radius; ++dx) {
             if (dx * dx + dz * dz > radius * radius) continue;
             ChunkCoord coord{cx + dx, 0, cz + dz};
-            if (!find_streamed_chunk(app, coord)) {
-                generate_landscape_chunk(app, dim, coord);
+            const bool collidable = dx * dx + dz * dz <= collider_radius_sq;
+            StreamedWorldChunk* chunk = find_streamed_chunk(app, coord);
+            if (!chunk) {
+                generate_landscape_chunk(app, dim, coord, collidable);
+            } else if (collidable && !chunk->colliders_loaded) {
+                unload_streamed_chunk(dim, chunk);
+                generate_landscape_chunk(app, dim, coord, true);
             }
         }
     }
@@ -1005,6 +1073,7 @@ static void generate_playground_world(DemoApp* app) {
     dim->sky_top = {95, 142, 205, 255};
     dim->sky_bottom = {210, 229, 245, 255};
     dim->fog_color = {185, 204, 219, 255};
+    apply_profile_render_radius(app, dim);
 
     MeshGeometry cube = make_box_geometry("unit cube", {1.0f, 1.0f, 1.0f});
     MeshGeometry cube_lod = make_box_geometry("unit cube lod", {0.96f, 0.96f, 0.96f});
@@ -1103,6 +1172,7 @@ static void generate_hills_world(DemoApp* app) {
     dim->sky_top = {112, 158, 214, 255};
     dim->sky_bottom = {214, 230, 238, 255};
     dim->fog_color = {180, 202, 212, 255};
+    apply_profile_render_radius(app, dim);
 
     MeshGeometry cube = make_box_geometry("stream cube", {1.0f, 1.0f, 1.0f});
     MeshGeometry cube_lod = make_box_geometry("stream cube lod", {0.96f, 0.96f, 0.96f});
@@ -1908,7 +1978,8 @@ static void draw_pause(DemoApp* app, Dimension* dim, PlayerEntity* player) {
     demo_draw_pause_overlay_screen(PauseScreen{
         &app->renderer,
         static_cast<int>(floorf(app->renderer.fov + 0.5f)),
-        app->renderer.scale_power
+        app->renderer.scale_power,
+        dim ? dim->render_radius_chunks : 6
     });
 }
 
@@ -1999,7 +2070,7 @@ static bool update_joining_screen(DemoApp* app, Dimension* dim, PlayerEntity* pl
     return true;
 }
 
-static void update_pause_menu(DemoApp* app) {
+static void update_pause_menu(DemoApp* app, Dimension* dim) {
     if (app->frame_input.escape_pressed) {
         resume_game(app);
         return;
@@ -2016,7 +2087,7 @@ static void update_pause_menu(DemoApp* app) {
             exit_to_first_menu(app);
             return;
         }
-        if (hit.control == pause_control_fov || hit.control == pause_control_scale) {
+        if (hit.control == pause_control_fov || hit.control == pause_control_scale || hit.control == pause_control_render_radius) {
             app->dragged_pause_control = hit.control;
         }
     }
@@ -2034,6 +2105,9 @@ static void update_pause_menu(DemoApp* app) {
                 app->renderer.scale_power = scale_power;
                 mark_profile_dirty(app);
             }
+        } else if (app->dragged_pause_control == pause_control_render_radius) {
+            const int radius = demo_pause_value_from_mouse(pause_control_render_radius, GetMousePosition());
+            set_dimension_render_radius(app, dim, radius, true);
         }
     }
 
@@ -2151,7 +2225,7 @@ static void update_game(DemoApp* app) {
         draw_pause(app, dim, player);
         return;
     } else if (app->paused) {
-        update_pause_menu(app);
+        update_pause_menu(app, dim);
         if (!app->in_game) return;
 
         app->input = {};
