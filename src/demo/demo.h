@@ -30,6 +30,7 @@ struct DemoFrameInput {
     bool plus_pressed = false;
     bool minus_pressed = false;
     bool f3_pressed = false;
+    bool f11_pressed = false;
     bool r_pressed = false;
     bool c_pressed = false;
     bool o_pressed = false;
@@ -65,6 +66,8 @@ struct DemoProfile {
     int fov = 90;
     int scale_power = 0;
     int render_radius_chunks = 0;
+    bool fullscreen = false;
+    bool show_fps = false;
     u32 session_count = 0;
     std::array<SavedSessionState, max_saved_sessions> sessions{};
 };

@@ -38,6 +38,8 @@ enum PauseControl : u32 {
     pause_control_fov,
     pause_control_scale,
     pause_control_render_radius,
+    pause_control_fullscreen,
+    pause_control_fps_counter,
     pause_control_continue,
     pause_control_first_menu
 };
@@ -67,6 +69,8 @@ struct PauseScreen {
     int fov = 90;
     int scale_power = 0;
     int render_radius = 6;
+    bool fullscreen = false;
+    bool show_fps = false;
 };
 
 struct MenuHit {

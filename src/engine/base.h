@@ -28,7 +28,7 @@ constexpr u32 max_players = 16;
 constexpr u32 max_vertices_per_geometry = 96;
 constexpr u32 max_triangles_per_geometry = 160;
 constexpr u32 max_edges_per_geometry = 160;
-constexpr u32 max_render_edges = 8192;
+constexpr u32 max_render_edges = 65536;
 
 constexpr u32 max_mesh_refs_per_chunk = 96;
 constexpr u32 max_sprite_refs_per_chunk = 64;

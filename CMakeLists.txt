@@ -18,6 +18,7 @@ set(RAYLIB_VERSION 6.0)
 set(OL_RAYLIB_SOURCE_DIR "" CACHE PATH "Optional local raylib source directory")
 option(OL_USE_STEAMWORKS "Build optional Steamworks networking path" OFF)
 set(STEAMWORKS_SDK_DIR "" CACHE PATH "Path to Steamworks SDK root")
+set(GRAPHICS "GRAPHICS_API_OPENGL_43" CACHE STRING "raylib graphics backend" FORCE)
 
 find_package(raylib ${RAYLIB_VERSION} QUIET)
 if (NOT raylib_FOUND)

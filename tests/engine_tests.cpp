@@ -22,6 +22,7 @@
 #endif
 
 #include <cmath>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -1527,6 +1528,11 @@ struct EdgeCompareView {
     Vector3 target = {0.0f, 0.0f, 0.0f};
 };
 
+struct HillsDiagnosticView {
+    EdgeCompareView view{};
+    Vector3 feet = {0.0f, 0.0f, 0.0f};
+};
+
 ol::CameraView make_edge_compare_camera(ol::u32 dim_id, const ol::Dimension* dim, const EdgeCompareView& src) {
     ol::CameraView view{};
     view.anchor = test_pos(dim_id, {src.eye.x, 0.0f, src.eye.z}, dim->chunk_size_m);
@@ -1539,12 +1545,74 @@ ol::CameraView make_edge_compare_camera(ol::u32 dim_id, const ol::Dimension* dim
     return view;
 }
 
-bool export_render_target(ol::RenderState* renderer, const char* out_path) {
+Image capture_render_target(ol::RenderState* renderer) {
     Image img = LoadImageFromTexture(renderer->target.texture);
     ImageFlipVertical(&img);
+    return img;
+}
+
+bool export_captured_image(Image img, const char* out_path) {
+    return ExportImage(img, out_path);
+}
+
+bool export_render_target(ol::RenderState* renderer, const char* out_path) {
+    Image img = capture_render_target(renderer);
     const bool exported = ExportImage(img, out_path);
     UnloadImage(img);
     return exported;
+}
+
+struct ImageDiffStats {
+    int width = 0;
+    int height = 0;
+    ol::u64 changed_pixels = 0;
+    ol::u64 edge_disagreement_pixels = 0;
+    ol::u64 a_edge_only_pixels = 0;
+    ol::u64 b_edge_only_pixels = 0;
+    double mean_abs_rgb = 0.0;
+    int max_delta = 0;
+};
+
+ImageDiffStats compare_images(const Image& a, const Image& b, int channel_threshold) {
+    ImageDiffStats stats{};
+    stats.width = a.width;
+    stats.height = a.height;
+    if (a.width != b.width || a.height != b.height || a.width <= 0 || a.height <= 0) {
+        stats.changed_pixels = static_cast<ol::u64>(a.width > 0 && a.height > 0 ? a.width * a.height : 1);
+        stats.edge_disagreement_pixels = stats.changed_pixels;
+        stats.max_delta = 255;
+        stats.mean_abs_rgb = 255.0;
+        return stats;
+    }
+
+    Color* a_pixels = LoadImageColors(a);
+    Color* b_pixels = LoadImageColors(b);
+    ol::u64 total_abs = 0;
+    const int total_pixels = a.width * a.height;
+    for (int i = 0; i < total_pixels; ++i) {
+        const Color ca = a_pixels[i];
+        const Color cb = b_pixels[i];
+        const int dr = std::abs(static_cast<int>(ca.r) - static_cast<int>(cb.r));
+        const int dg = std::abs(static_cast<int>(ca.g) - static_cast<int>(cb.g));
+        const int db = std::abs(static_cast<int>(ca.b) - static_cast<int>(cb.b));
+        const int max_delta = std::max(dr, std::max(dg, db));
+        stats.max_delta = std::max(stats.max_delta, max_delta);
+        total_abs += static_cast<ol::u64>(dr + dg + db);
+        if (max_delta > channel_threshold) ++stats.changed_pixels;
+
+        const bool a_edge = ca.r < 96 && ca.g < 96 && ca.b < 96;
+        const bool b_edge = cb.r < 96 && cb.g < 96 && cb.b < 96;
+        if (a_edge != b_edge) {
+            ++stats.edge_disagreement_pixels;
+            if (a_edge) ++stats.a_edge_only_pixels;
+            else ++stats.b_edge_only_pixels;
+        }
+    }
+    UnloadImageColors(a_pixels);
+    UnloadImageColors(b_pixels);
+
+    stats.mean_abs_rgb = static_cast<double>(total_abs) / static_cast<double>(total_pixels * 3);
+    return stats;
 }
 
 bool run_edge_compare_test() {
@@ -1576,36 +1644,98 @@ bool run_edge_compare_test() {
         {"user-edge-blocks", {-6.7242f, 1.6500f, -6.1981f}, {-1.7872f, -0.9408f, -0.4611f}},
         {"user-edge-west-wall", {-16.0361f, 1.6500f, 11.9724f}, {-19.0325f, 0.6336f, 19.3201f}},
         {"user-edge-tunnel-inside", {10.4218f, 0.8000f, -2.0930f}, {10.4921f, -0.0941f, -10.0426f}},
+        {"user-extra-edges", {-3.8222f, 3.7818f, -3.7859f}, {-9.2737f, 1.1229f, -9.0025f}},
+        {"user-uneven-thickness", {2.3903f, 1.6500f, 7.6561f}, {9.6315f, -1.5653f, 8.7637f}},
+        {"user-extra-tunnel-wall", {-0.0465f, 1.6500f, 10.7064f}, {3.1123f, 0.3881f, 3.4656f}},
+        {"user-extra-wall-angled", {-5.9585f, 1.6500f, 6.7412f}, {-13.3023f, -0.4376f, 9.1310f}},
         {"wall-blocks", {-12.5f, 1.7f, 1.0f}, {2.0f, 1.0f, -5.0f}},
     };
 
-    bool ok = expect_true(dim != nullptr, "Edge comparison has a generated dimension");
+    bool ok = expect_true(renderer.edge_filter_compute_ready, "Edge compute shader loaded");
+    ok = expect_true(dim != nullptr, "Edge comparison has a generated dimension") && ok;
     ol::renderer_ensure_target(&renderer);
     for (const EdgeCompareView& view_def : views) {
         if (!dim) break;
         const ol::CameraView view = make_edge_compare_camera(app->dimension_id, dim, view_def);
+        const bool scaled_repro =
+            std::strcmp(view_def.name, "user-extra-edges") == 0 ||
+            std::strcmp(view_def.name, "user-uneven-thickness") == 0;
+        const int max_scale_power = scaled_repro ? 3 : 0;
 
-        char old_path[128]{};
-        char new_path[128]{};
-        char ref_path[128]{};
-        std::snprintf(old_path, sizeof(old_path), "test-output/edge-compare-%s-2d.png", view_def.name);
-        std::snprintf(new_path, sizeof(new_path), "test-output/edge-compare-%s-depth.png", view_def.name);
-        std::snprintf(ref_path, sizeof(ref_path), "test-output/edge-compare-%s-reference.png", view_def.name);
+        for (int scale_power = 0; scale_power <= max_scale_power; ++scale_power) {
+            renderer.scale_power = scale_power;
+            ol::renderer_ensure_target(&renderer);
 
-        renderer.depth_test_edges = false;
-        renderer.brute_force_edge_occlusion = false;
-        ol::renderer_draw_dimension(&renderer, dim, view, app->local_player_id);
-        ok = expect_true(export_render_target(&renderer, old_path), "2D edge comparison image exported") && ok;
+            char suffix[16]{};
+            if (scale_power > 0) std::snprintf(suffix, sizeof(suffix), "-s%d", scale_power);
+            char old_path[128]{};
+            char new_path[128]{};
+            char gpu_path[128]{};
+            char ref_path[128]{};
+            std::snprintf(old_path, sizeof(old_path), "test-output/edge-compare-%s%s-2d.png", view_def.name, suffix);
+            std::snprintf(new_path, sizeof(new_path), "test-output/edge-compare-%s%s-depth.png", view_def.name, suffix);
+            std::snprintf(gpu_path, sizeof(gpu_path), "test-output/edge-compare-%s%s-depth-gpu.png", view_def.name, suffix);
+            std::snprintf(ref_path, sizeof(ref_path), "test-output/edge-compare-%s%s-reference.png", view_def.name, suffix);
 
-        renderer.depth_test_edges = true;
-        renderer.brute_force_edge_occlusion = false;
-        ol::renderer_draw_dimension(&renderer, dim, view, app->local_player_id);
-        ok = expect_true(export_render_target(&renderer, new_path), "Depth edge comparison image exported") && ok;
+            renderer.depth_test_edges = false;
+            renderer.gpu_depth_edges = false;
+            renderer.brute_force_edge_occlusion = false;
+            ol::renderer_draw_dimension(&renderer, dim, view, app->local_player_id);
+            ok = expect_true(export_render_target(&renderer, old_path), "2D edge comparison image exported") && ok;
 
-        renderer.depth_test_edges = true;
-        renderer.brute_force_edge_occlusion = true;
-        ol::renderer_draw_dimension(&renderer, dim, view, app->local_player_id);
-        ok = expect_true(export_render_target(&renderer, ref_path), "Reference edge comparison image exported") && ok;
+            renderer.depth_test_edges = true;
+            renderer.gpu_depth_edges = false;
+            renderer.brute_force_edge_occlusion = false;
+            ol::renderer_draw_dimension(&renderer, dim, view, app->local_player_id);
+            Image cpu_depth = capture_render_target(&renderer);
+            ok = expect_true(export_captured_image(cpu_depth, new_path), "Depth edge comparison image exported") && ok;
+
+            renderer.depth_test_edges = true;
+            renderer.gpu_depth_edges = true;
+            renderer.brute_force_edge_occlusion = false;
+            ol::renderer_draw_dimension(&renderer, dim, view, app->local_player_id);
+            Image gpu_depth = capture_render_target(&renderer);
+            ok = expect_true(export_captured_image(gpu_depth, gpu_path), "GPU depth edge comparison image exported") && ok;
+
+            const ImageDiffStats diff = compare_images(cpu_depth, gpu_depth, 24);
+            const double total_pixels = static_cast<double>(diff.width) * static_cast<double>(diff.height);
+            const double changed_pct = total_pixels > 0.0 ? static_cast<double>(diff.changed_pixels) * 100.0 / total_pixels : 100.0;
+            const double edge_changed_pct = total_pixels > 0.0 ? static_cast<double>(diff.edge_disagreement_pixels) * 100.0 / total_pixels : 100.0;
+            const double cpu_only_pct = total_pixels > 0.0 ? static_cast<double>(diff.a_edge_only_pixels) * 100.0 / total_pixels : 100.0;
+            const double gpu_only_pct = total_pixels > 0.0 ? static_cast<double>(diff.b_edge_only_pixels) * 100.0 / total_pixels : 100.0;
+            std::printf(
+                "edge GPU compare %s scale=1/%d native=%dx%d: changed=%llu (%.3f%%) edge_disagree=%llu (%.3f%%) cpu_only=%llu gpu_only=%llu mean_abs=%.3f max_delta=%d\n",
+                view_def.name,
+                1 << scale_power,
+                renderer.native_w,
+                renderer.native_h,
+                static_cast<unsigned long long>(diff.changed_pixels),
+                changed_pct,
+                static_cast<unsigned long long>(diff.edge_disagreement_pixels),
+                edge_changed_pct,
+                static_cast<unsigned long long>(diff.a_edge_only_pixels),
+                static_cast<unsigned long long>(diff.b_edge_only_pixels),
+                diff.mean_abs_rgb,
+                diff.max_delta);
+            const double mean_abs_limit = scale_power > 0 ? 2.0 : 1.25;
+            ok = expect_true(changed_pct < 2.5 && edge_changed_pct < 1.5 && diff.mean_abs_rgb < mean_abs_limit,
+                "GPU depth edges visually match CPU depth edges") && ok;
+            if (std::strcmp(view_def.name, "user-extra-tunnel-wall") == 0) {
+                ok = expect_true(gpu_only_pct < 0.02, "GPU depth does not add tunnel/wall edge pixels") && ok;
+            }
+            if (std::strcmp(view_def.name, "user-extra-wall-angled") == 0) {
+                ok = expect_true(cpu_only_pct < 0.02, "GPU depth does not drop angled wall edge pixels") && ok;
+            }
+
+            UnloadImage(cpu_depth);
+            UnloadImage(gpu_depth);
+
+            renderer.depth_test_edges = true;
+            renderer.gpu_depth_edges = false;
+            renderer.brute_force_edge_occlusion = true;
+            ol::renderer_draw_dimension(&renderer, dim, view, app->local_player_id);
+            ok = expect_true(export_render_target(&renderer, ref_path), "Reference edge comparison image exported") && ok;
+        }
     }
 
     ol::renderer_shutdown(&renderer);
@@ -1622,39 +1752,198 @@ bool run_hills_render_benchmark() {
     ol::RenderState renderer{};
     ol::renderer_init(&renderer);
 
-    auto app = std::make_unique<ol::DemoApp>();
-    std::snprintf(app->world_name, sizeof(app->world_name), "hills");
-    std::snprintf(app->session_name, sizeof(app->session_name), "render-benchmark");
-
     const Vector3 feet_m = {-2.4580f, 2.3080f, 71.6100f};
     const ol::WorldPos saved_feet = test_pos(0, feet_m, 16.0f);
-    app->profile.session_count = 1;
-    ol::SavedSessionState& session = app->profile.sessions[0];
-    session.valid = true;
-    std::snprintf(session.name, sizeof(session.name), "%s", app->session_name);
-    std::snprintf(session.world_name, sizeof(session.world_name), "%s", app->world_name);
-    session.player_count = 1;
-    session.players[0].valid = true;
-    session.players[0].peer_id = app->net.local_peer_id;
-    session.players[0].chunk = saved_feet.chunk;
-    session.players[0].local = saved_feet.local;
-
-    ol::demo_generate_world(app.get());
-    ol::Dimension* dim = ol::world_get_dimension(&app->world, app->dimension_id);
     const EdgeCompareView view_def = {
         "hills-lag",
         {-2.4580f, 4.0080f, 71.6100f},
         {-1.0408f, 4.3231f, 79.4772f}
     };
-    const ol::CameraView view = dim ? make_edge_compare_camera(app->dimension_id, dim, view_def) : ol::CameraView{};
+    const HillsDiagnosticView hills_diagnostic_views[] = {
+        {
+            {"hills-fog-overlap", {-494.8463f, 2.2478f, -202.1192f}, {-492.6794f, 2.8281f, -194.4402f}},
+            {-494.8463f, 0.5478f, -202.1192f}
+        },
+        {
+            {"hills-strange-edges-a", {-1736.5785f, 3.6916f, -442.5047f}, {-1743.8311f, 2.8849f, -439.2261f}},
+            {-1736.5785f, 1.9916f, -442.5047f}
+        },
+        {
+            {"hills-strange-edges-b", {-1755.7123f, 4.1697f, -437.6480f}, {-1762.6770f, 3.5032f, -433.7688f}},
+            {-1755.7123f, 2.4697f, -437.6480f}
+        },
+    };
 
-    bool ok = expect_true(dim != nullptr, "Hills benchmark generated a dimension");
-    if (dim) {
-        ol::renderer_ensure_target(&renderer);
+    bool ok = expect_true(renderer.edge_filter_compute_ready, "Edge compute shader loaded for hills benchmark");
+    ol::renderer_ensure_target(&renderer);
+
+    const int radii[] = {5, 16, ol::pause_render_radius_max};
+    for (int radius : radii) {
+        auto app = std::make_unique<ol::DemoApp>();
+        std::snprintf(app->world_name, sizeof(app->world_name), "hills");
+        std::snprintf(app->session_name, sizeof(app->session_name), "render-benchmark-r%d", radius);
+        app->profile.render_radius_chunks = radius;
+        app->profile.session_count = 1;
+        ol::SavedSessionState& session = app->profile.sessions[0];
+        session.valid = true;
+        std::snprintf(session.name, sizeof(session.name), "%s", app->session_name);
+        std::snprintf(session.world_name, sizeof(session.world_name), "%s", app->world_name);
+        session.player_count = 1;
+        session.players[0].valid = true;
+        session.players[0].peer_id = app->net.local_peer_id;
+        session.players[0].chunk = saved_feet.chunk;
+        session.players[0].local = saved_feet.local;
+
+        ol::demo_generate_world(app.get());
+        ol::Dimension* dim = ol::world_get_dimension(&app->world, app->dimension_id);
+        const ol::CameraView view = dim ? make_edge_compare_camera(app->dimension_id, dim, view_def) : ol::CameraView{};
+        ok = expect_true(dim != nullptr, "Hills benchmark generated a dimension") && ok;
+        if (!dim) continue;
+
+        if (radius == ol::pause_render_radius_max) {
+            for (const HillsDiagnosticView& diag_view : hills_diagnostic_views) {
+                auto diag_app = std::make_unique<ol::DemoApp>();
+                std::snprintf(diag_app->world_name, sizeof(diag_app->world_name), "hills");
+                std::snprintf(diag_app->session_name, sizeof(diag_app->session_name), "render-diagnostic-%s-r%d", diag_view.view.name, radius);
+                diag_app->profile.render_radius_chunks = radius;
+                diag_app->profile.session_count = 1;
+                ol::SavedSessionState& diag_session = diag_app->profile.sessions[0];
+                diag_session.valid = true;
+                std::snprintf(diag_session.name, sizeof(diag_session.name), "%s", diag_app->session_name);
+                std::snprintf(diag_session.world_name, sizeof(diag_session.world_name), "%s", diag_app->world_name);
+                diag_session.player_count = 1;
+                diag_session.players[0].valid = true;
+                diag_session.players[0].peer_id = diag_app->net.local_peer_id;
+                const ol::WorldPos hills_feet = test_pos(0, diag_view.feet, 16.0f);
+                diag_session.players[0].chunk = hills_feet.chunk;
+                diag_session.players[0].local = hills_feet.local;
+
+                ol::demo_generate_world(diag_app.get());
+                ol::Dimension* hills_dim = ol::world_get_dimension(&diag_app->world, diag_app->dimension_id);
+                ok = expect_true(hills_dim != nullptr, "Hills overlap diagnostic generated a dimension") && ok;
+                if (!hills_dim) continue;
+
+                const ol::CameraView hills_view = make_edge_compare_camera(diag_app->dimension_id, hills_dim, diag_view.view);
+
+                char flat_path[160]{};
+                char cpu_path[160]{};
+                char gpu_path[160]{};
+                std::snprintf(flat_path, sizeof(flat_path), "test-output/%s-flat.png", diag_view.view.name);
+                std::snprintf(cpu_path, sizeof(cpu_path), "test-output/%s-cpu-depth.png", diag_view.view.name);
+                std::snprintf(gpu_path, sizeof(gpu_path), "test-output/%s-gpu-depth.png", diag_view.view.name);
+
+                renderer.depth_test_edges = false;
+                renderer.gpu_depth_edges = false;
+                ol::renderer_render_dimension_to_target(&renderer, hills_dim, hills_view, diag_app->local_player_id);
+                ok = expect_true(export_render_target(&renderer, flat_path), "Hills overlap flat image exported") && ok;
+
+                renderer.depth_test_edges = true;
+                renderer.gpu_depth_edges = false;
+                ol::renderer_render_dimension_to_target(&renderer, hills_dim, hills_view, diag_app->local_player_id);
+                Image hills_cpu_depth = capture_render_target(&renderer);
+                ok = expect_true(export_captured_image(hills_cpu_depth, cpu_path), "Hills overlap CPU-depth image exported") && ok;
+
+                renderer.depth_test_edges = true;
+                renderer.gpu_depth_edges = true;
+                ol::renderer_render_dimension_to_target(&renderer, hills_dim, hills_view, diag_app->local_player_id);
+                Image hills_gpu_depth = capture_render_target(&renderer);
+                ok = expect_true(export_captured_image(hills_gpu_depth, gpu_path), "Hills overlap GPU-depth image exported") && ok;
+
+                const ImageDiffStats hills_diff = compare_images(hills_cpu_depth, hills_gpu_depth, 24);
+                const double hills_pixels = static_cast<double>(hills_diff.width) * static_cast<double>(hills_diff.height);
+                const double hills_changed_pct = hills_pixels > 0.0 ? static_cast<double>(hills_diff.changed_pixels) * 100.0 / hills_pixels : 100.0;
+                const double hills_edge_changed_pct = hills_pixels > 0.0 ? static_cast<double>(hills_diff.edge_disagreement_pixels) * 100.0 / hills_pixels : 100.0;
+                std::printf(
+                    "hills GPU compare %s: changed=%llu (%.3f%%) edge_disagree=%llu (%.3f%%) cpu_only=%llu gpu_only=%llu mean_abs=%.3f max_delta=%d\n",
+                    diag_view.view.name,
+                    static_cast<unsigned long long>(hills_diff.changed_pixels),
+                    hills_changed_pct,
+                    static_cast<unsigned long long>(hills_diff.edge_disagreement_pixels),
+                    hills_edge_changed_pct,
+                    static_cast<unsigned long long>(hills_diff.a_edge_only_pixels),
+                    static_cast<unsigned long long>(hills_diff.b_edge_only_pixels),
+                    hills_diff.mean_abs_rgb,
+                    hills_diff.max_delta);
+                ok = expect_true(hills_changed_pct < 2.5 && hills_edge_changed_pct < 1.5 && hills_diff.mean_abs_rgb < 1.25,
+                    "Hills GPU depth edges match CPU depth edges") && ok;
+                UnloadImage(hills_cpu_depth);
+                UnloadImage(hills_gpu_depth);
+            }
+        }
+
+        ol::u32 streamed_valid_chunks = 0;
+        ol::u32 streamed_collider_chunks = 0;
+        for (const ol::StreamedWorldChunk& chunk : app->streamed_chunks) {
+            if (!chunk.valid) continue;
+            ++streamed_valid_chunks;
+            if (chunk.colliders_loaded) ++streamed_collider_chunks;
+        }
+
+        ol::u32 visible_chunks = 0;
+        ol::u32 visible_mesh_refs = 0;
+        ol::u32 visible_edge_mesh_refs = 0;
+        ol::u32 visible_triangles = 0;
+        ol::u32 visible_edges = 0;
+        for (ol::u32 chunk_slot = 0; chunk_slot < dim->chunks.count; ++chunk_slot) {
+            const ol::Chunk* chunk = &dim->chunks.data[chunk_slot];
+            const float dx = static_cast<float>(chunk->coord.x - view.anchor.chunk.x);
+            const float dy = static_cast<float>(chunk->coord.y - view.anchor.chunk.y);
+            const float dz = static_cast<float>(chunk->coord.z - view.anchor.chunk.z);
+            const float chunk_dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (chunk_dist > static_cast<float>(dim->render_radius_chunks)) continue;
+
+            ++visible_chunks;
+            for (ol::u32 i = 0; i < chunk->mesh_count; ++i) {
+                const ol::MeshInstance* mesh = ol::arena_get(&dim->meshes, chunk->meshes[i]);
+                if (!mesh || !mesh->visible) continue;
+
+                const ol::MeshGeometry* geometry = ol::arena_get(&dim->geometries, mesh->geometry);
+                if (!geometry) continue;
+                if (chunk_dist > static_cast<float>(dim->quality_render_radius_chunks)) {
+                    if (!ol::id_valid(geometry->lod_geometry)) continue;
+                    geometry = ol::arena_get(&dim->geometries, geometry->lod_geometry);
+                    if (!geometry) continue;
+                }
+
+                ++visible_mesh_refs;
+                visible_triangles += geometry->triangle_count;
+                if (mesh->draw_edges) {
+                    ++visible_edge_mesh_refs;
+                    visible_edges += geometry->edge_count;
+                }
+            }
+        }
+
+        std::printf(
+            "hills radius %d setup: quality=%d chunks=%u streamed=%u collider_chunks=%u meshes=%u physics_boxes=%u visible_chunks=%u visible_meshes=%u edge_meshes=%u visible_tris=%u visible_edges=%u\n",
+            dim->render_radius_chunks,
+            dim->quality_render_radius_chunks,
+            dim->chunks.count,
+            streamed_valid_chunks,
+            streamed_collider_chunks,
+            dim->meshes.count,
+            dim->physics.boxes.count,
+            visible_chunks,
+            visible_mesh_refs,
+            visible_edge_mesh_refs,
+            visible_triangles,
+            visible_edges);
+
         constexpr int warmup_frames = 3;
         constexpr int measured_frames = 30;
-        for (int mode = 0; mode < 2; ++mode) {
-            renderer.depth_test_edges = mode != 0;
+        for (int mode = 0; mode < 3; ++mode) {
+            const char* mode_name = "flat";
+            renderer.depth_test_edges = false;
+            renderer.gpu_depth_edges = false;
+            if (mode == 1) {
+                mode_name = "cpu-depth";
+                renderer.depth_test_edges = true;
+                renderer.gpu_depth_edges = false;
+            } else if (mode == 2) {
+                mode_name = "gpu-depth";
+                renderer.depth_test_edges = true;
+                renderer.gpu_depth_edges = true;
+            }
             for (int i = 0; i < warmup_frames; ++i) {
                 ol::renderer_render_dimension_to_target(&renderer, dim, view, app->local_player_id);
             }
@@ -1665,8 +1954,9 @@ bool run_hills_render_benchmark() {
             }
             const double elapsed_ms = (GetTime() - start) * 1000.0;
             std::printf(
-                "hills render benchmark (%s edges): frames=%d avg_ms=%.3f edges=%u tris=%u unbounded=%u samples=%llu candidates=%llu ray_tests=%llu\n",
-                renderer.depth_test_edges ? "depth" : "flat",
+                "hills radius %d render benchmark (%s edges): frames=%d avg_ms=%.3f edges=%u tris=%u unbounded=%u samples=%llu candidates=%llu ray_tests=%llu\n",
+                dim->render_radius_chunks,
+                mode_name,
                 measured_frames,
                 elapsed_ms / static_cast<double>(measured_frames),
                 renderer.debug_edge_count,
@@ -1962,14 +2252,44 @@ bool run_menu_visual_test() {
     }
     UnloadImageColors(pixels);
     UnloadImage(img);
+
+    BeginTextureMode(target);
+    ol::demo_draw_pause_contents(ol::PauseScreen{
+        &renderer,
+        90,
+        0,
+        ol::pause_render_radius_max,
+        true,
+        true
+    });
+    EndTextureMode();
+
+    Image pause_img = LoadImageFromTexture(target.texture);
+    ImageFlipVertical(&pause_img);
+    const char* pause_out_path = "test-output/pause-smoke.png";
+    const bool pause_exported = ExportImage(pause_img, pause_out_path);
+    Color* pause_pixels = LoadImageColors(pause_img);
+    int pause_bright = 0;
+    int pause_enabled_accent = 0;
+    for (int i = 0; i < pause_img.width * pause_img.height; ++i) {
+        const Color c = pause_pixels[i];
+        if (c.r > 210 && c.g > 210 && c.b > 210) pause_bright++;
+        if (c.g > 190 && c.r < 150 && c.b < 180) pause_enabled_accent++;
+    }
+    UnloadImageColors(pause_pixels);
+    UnloadImage(pause_img);
+
     UnloadRenderTexture(target);
     ol::renderer_shutdown(&renderer);
     CloseWindow();
 
     const bool ok = expect_true(exported, "Menu smoke image exported") &&
                     expect_true(bright > 500, "Menu smoke image contains large readable text") &&
-                    expect_true(color_swatch > 300, "Menu smoke image contains player color swatch");
-    if (ok) std::printf("menu visual test passed: %s\n", out_path);
+                    expect_true(color_swatch > 300, "Menu smoke image contains player color swatch") &&
+                    expect_true(pause_exported, "Pause smoke image exported") &&
+                    expect_true(pause_bright > 500, "Pause smoke image contains readable controls") &&
+                    expect_true(pause_enabled_accent > 300, "Pause smoke image contains enabled toggles");
+    if (ok) std::printf("menu visual test passed: %s %s\n", out_path, pause_out_path);
     return ok;
 }
 

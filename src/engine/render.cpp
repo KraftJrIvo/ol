@@ -11,17 +11,32 @@
         #define WINGDIAPI __declspec(dllimport)
     #endif
 #endif
-#if defined(__APPLE__)
+#if defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_43)
+#include "external/glad.h"
+#elif defined(__APPLE__)
 #include <OpenGL/gl.h>
 #else
 #include <GL/gl.h>
 #endif
 
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE 0x812F
+#endif
+#ifndef GL_DEPTH_COMPONENT24
+#define GL_DEPTH_COMPONENT24 0x81A6
+#endif
+#ifndef GL_SHADER_STORAGE_BARRIER_BIT
+#define GL_SHADER_STORAGE_BARRIER_BIT 0x00002000
+#endif
+
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <thread>
+#include <utility>
 #include <vector>
 
 namespace ol {
@@ -73,12 +88,340 @@ static Shader load_sprite_alpha_shader(bool* out_ready) {
     return shader;
 }
 
+static Shader load_edge_depth_shader(RenderState* renderer, bool* out_ready) {
+    if (out_ready) *out_ready = false;
+    if (renderer) {
+        renderer->edge_depth_texture_loc = -1;
+        renderer->edge_depth_bias_loc = -1;
+    }
+
+    static const char* vs =
+        "#version 330\n"
+        "in vec3 vertexPosition;\n"
+        "in vec2 vertexTexCoord;\n"
+        "in vec4 vertexColor;\n"
+        "uniform mat4 mvp;\n"
+        "uniform float depthBias;\n"
+        "out vec4 fragColor;\n"
+        "out vec2 fragCenterScreen;\n"
+        "out float fragEdgeDepth;\n"
+        "void main() {\n"
+        "    fragColor = vertexColor;\n"
+        "    fragCenterScreen = vertexTexCoord;\n"
+        "    fragEdgeDepth = vertexPosition.z;\n"
+        "    vec4 pos = mvp * vec4(vertexPosition.xy, 0.0, 1.0);\n"
+        "    pos.z = max(vertexPosition.z - depthBias * 0.5, 0.0) * 2.0 - 1.0;\n"
+        "    gl_Position = pos;\n"
+        "}\n";
+
+    static const char* fs =
+        "#version 330\n"
+        "in vec4 fragColor;\n"
+        "in vec2 fragCenterScreen;\n"
+        "in float fragEdgeDepth;\n"
+        "uniform sampler2D depthTexture;\n"
+        "uniform float depthBias;\n"
+        "out vec4 finalColor;\n"
+        "void main() {\n"
+        "    ivec2 size = textureSize(depthTexture, 0);\n"
+        "    vec2 depthPixel = vec2(fragCenterScreen.x, float(size.y - 1) - fragCenterScreen.y);\n"
+        "    ivec2 center = ivec2(clamp(depthPixel, vec2(0.0), vec2(size - ivec2(1))));\n"
+        "    float centerDepth = texelFetch(depthTexture, center, 0).r;\n"
+        "    vec2 tangent = length(dFdx(fragCenterScreen)) > length(dFdy(fragCenterScreen)) ? dFdx(fragCenterScreen) : dFdy(fragCenterScreen);\n"
+        "    tangent = length(tangent) > 0.0001 ? normalize(vec2(tangent.x, -tangent.y)) : vec2(1.0, 0.0);\n"
+        "    float sceneDepth = centerDepth;\n"
+        "    for (int i = -32; i <= 32; ++i) {\n"
+        "        vec2 samplePixel = depthPixel + tangent * float(i);\n"
+        "        ivec2 p = ivec2(clamp(samplePixel, vec2(0.0), vec2(size - ivec2(1))));\n"
+        "        sceneDepth = max(sceneDepth, texelFetch(depthTexture, p, 0).r);\n"
+        "    }\n"
+        "    if (fragEdgeDepth > sceneDepth + depthBias) discard;\n"
+        "    finalColor = fragColor;\n"
+        "}\n";
+
+    Shader shader = LoadShaderFromMemory(vs, fs);
+    if (IsShaderValid(shader)) {
+        if (renderer) {
+            renderer->edge_depth_texture_loc = GetShaderLocation(shader, "depthTexture");
+            renderer->edge_depth_bias_loc = GetShaderLocation(shader, "depthBias");
+        }
+        if (out_ready) *out_ready = true;
+    }
+    return shader;
+}
+
+static u32 load_edge_filter_compute_program(RenderState* renderer, bool* out_ready) {
+    if (out_ready) *out_ready = false;
+    if (renderer) {
+        renderer->edge_filter_pass_id_loc = -1;
+        renderer->edge_filter_job_count_loc = -1;
+        renderer->edge_filter_edge_count_loc = -1;
+        renderer->edge_filter_triangle_count_loc = -1;
+        renderer->edge_filter_bin_count_loc = -1;
+        renderer->edge_filter_unbounded_count_loc = -1;
+        renderer->edge_filter_screen_size_loc = -1;
+        renderer->edge_filter_camera_pos_loc = -1;
+        renderer->edge_filter_brute_force_loc = -1;
+        renderer->edge_filter_scene_depth_texture_loc = -1;
+        renderer->edge_filter_after_sprites_depth_texture_loc = -1;
+    }
+
+    static const char* cs =
+        "#version 430\n"
+        "layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;\n"
+        "#define SCENE_GRID_COLS 32\n"
+        "#define SCENE_GRID_ROWS 18\n"
+        "struct EdgeIn { vec4 a; vec4 b; vec4 relA; vec4 relB; };\n"
+        "struct TriIn { vec4 aValid; vec4 e1; vec4 e2; vec4 bounds; };\n"
+        "struct RefineJob { uvec4 data; vec4 range; };\n"
+        "layout(std430, binding = 1) readonly buffer EdgeBuffer { EdgeIn edges[]; } edgeIn;\n"
+        "layout(std430, binding = 2) readonly buffer TriangleBuffer { TriIn triangles[]; } triIn;\n"
+        "layout(std430, binding = 3) readonly buffer BinRangeBuffer { uvec4 binRanges[]; } binRangeIn;\n"
+        "layout(std430, binding = 4) readonly buffer BinIndexBuffer { uint binIndices[]; } binIndexIn;\n"
+        "layout(std430, binding = 5) readonly buffer UnboundedBuffer { uint unboundedIndices[]; } unboundedIn;\n"
+        "layout(std430, binding = 6) readonly buffer SampleJobBuffer { uvec4 sampleJobs[]; } sampleJobIn;\n"
+        "layout(std430, binding = 7) writeonly buffer SampleResultBuffer { uint sampleResults[]; } sampleResultOut;\n"
+        "layout(std430, binding = 8) readonly buffer RefineJobBuffer { RefineJob refineJobs[]; } refineJobIn;\n"
+        "layout(std430, binding = 9) writeonly buffer RefineResultBuffer { float refineResults[]; } refineResultOut;\n"
+        "layout(std430, binding = 10) buffer StatsBuffer { uint stats[]; } statsOut;\n"
+        "uniform int passId;\n"
+        "uniform int jobCount;\n"
+        "uniform int edgeCount;\n"
+        "uniform int triangleCount;\n"
+        "uniform int binCount;\n"
+        "uniform int unboundedCount;\n"
+        "uniform ivec2 screenSize;\n"
+        "uniform vec3 cameraPos;\n"
+        "uniform int bruteForceEdgeOcclusion;\n"
+        "uniform sampler2D sceneDepthTexture;\n"
+        "uniform sampler2D afterSpritesDepthTexture;\n"
+        "float lerpFloat(float a, float b, float t) { return a + (b - a) * t; }\n"
+        "vec2 edgePointAt(EdgeIn edge, float t) { return edge.a.xy + (edge.b.xy - edge.a.xy) * t; }\n"
+        "float edgeDepthAt(EdgeIn edge, float t) { return lerpFloat(edge.a.z, edge.b.z, t); }\n"
+        "vec3 perspectiveLerpRel(vec3 a, vec3 b, float invWa, float invWb, float t) {\n"
+        "    float wa = invWa * (1.0 - t);\n"
+        "    float wb = invWb * t;\n"
+        "    float denom = wa + wb;\n"
+        "    if (abs(denom) < 0.000001) return a + (b - a) * t;\n"
+        "    return (a * wa + b * wb) / denom;\n"
+        "}\n"
+        "vec3 edgeRelPointAt(EdgeIn edge, float t) { return perspectiveLerpRel(edge.relA.xyz, edge.relB.xyz, edge.a.w, edge.b.w, t); }\n"
+        "int sceneGridColForX(float x) {\n"
+        "    if (screenSize.x <= 0) return 0;\n"
+        "    return clamp(int(floor(x * float(SCENE_GRID_COLS) / float(screenSize.x))), 0, SCENE_GRID_COLS - 1);\n"
+        "}\n"
+        "int sceneGridRowForY(float y) {\n"
+        "    if (screenSize.y <= 0) return 0;\n"
+        "    return clamp(int(floor(y * float(SCENE_GRID_ROWS) / float(screenSize.y))), 0, SCENE_GRID_ROWS - 1);\n"
+        "}\n"
+        "int sceneGridIndex(int col, int row) { return row * SCENE_GRID_COLS + col; }\n"
+        "bool screenBboxesOverlap(vec2 aMin, vec2 aMax, vec2 bMin, vec2 bMax) {\n"
+        "    return aMax.x >= bMin.x && aMin.x <= bMax.x && aMax.y >= bMin.y && aMin.y <= bMax.y;\n"
+        "}\n"
+        "bool rayIntersectsTriangle(vec3 origin, vec3 dir, TriIn tri, float maxDist) {\n"
+        "    const float eps = 0.00001;\n"
+        "    vec3 h = cross(dir, tri.e2.xyz);\n"
+        "    float det = dot(tri.e1.xyz, h);\n"
+        "    if (abs(det) < eps) return false;\n"
+        "    float invDet = 1.0 / det;\n"
+        "    vec3 s = origin - tri.aValid.xyz;\n"
+        "    float u = invDet * dot(s, h);\n"
+        "    if (u < -eps || u > 1.0 + eps) return false;\n"
+        "    vec3 q = cross(s, tri.e1.xyz);\n"
+        "    float v = invDet * dot(dir, q);\n"
+        "    if (v < -eps || u + v > 1.0 + eps) return false;\n"
+        "    float dist = invDet * dot(tri.e2.xyz, q);\n"
+        "    return dist > 0.002 && dist < maxDist - 0.035;\n"
+        "}\n"
+        "bool triangleBlocks(uint triIndex, bool filterBySample, vec2 sampleMin, vec2 sampleMax, vec3 dir, float dist) {\n"
+        "    if (triIndex >= uint(triangleCount)) return false;\n"
+        "    TriIn tri = triIn.triangles[triIndex];\n"
+        "    bool boundsValid = tri.aValid.w > 0.5;\n"
+        "    if (filterBySample && boundsValid && !screenBboxesOverlap(sampleMin, sampleMax, tri.bounds.xy, tri.bounds.zw)) return false;\n"
+        "    atomicAdd(statsOut.stats[1], 1u);\n"
+        "    atomicAdd(statsOut.stats[2], 1u);\n"
+        "    return rayIntersectsTriangle(cameraPos, dir, tri, dist);\n"
+        "}\n"
+        "bool scenePointVisible(EdgeIn edge, vec2 p, vec3 point) {\n"
+        "    if (edge.relB.w <= 0.5 || triangleCount <= 0) return true;\n"
+        "    vec3 delta = point - cameraPos;\n"
+        "    float dist = length(delta);\n"
+        "    if (dist <= 0.001) return true;\n"
+        "    vec3 dir = delta / dist;\n"
+        "    vec2 sampleMin = p - vec2(2.0);\n"
+        "    vec2 sampleMax = p + vec2(2.0);\n"
+        "    bool bruteForce = bruteForceEdgeOcclusion != 0;\n"
+        "    bool filterBySample = !bruteForce;\n"
+        "    if (bruteForce) {\n"
+        "        for (uint triIndex = 0u; triIndex < uint(triangleCount); ++triIndex) {\n"
+        "            if (triangleBlocks(triIndex, false, sampleMin, sampleMax, dir, dist)) return false;\n"
+        "        }\n"
+        "        return true;\n"
+        "    }\n"
+        "    for (uint i = 0u; i < uint(unboundedCount); ++i) {\n"
+        "        if (triangleBlocks(unboundedIn.unboundedIndices[i], filterBySample, sampleMin, sampleMax, dir, dist)) return false;\n"
+        "    }\n"
+        "    int minCol = sceneGridColForX(p.x - 2.0);\n"
+        "    int maxCol = sceneGridColForX(p.x + 2.0);\n"
+        "    int minRow = sceneGridRowForY(p.y - 2.0);\n"
+        "    int maxRow = sceneGridRowForY(p.y + 2.0);\n"
+        "    for (int row = minRow; row <= maxRow; ++row) {\n"
+        "        for (int col = minCol; col <= maxCol; ++col) {\n"
+        "            int bin = sceneGridIndex(col, row);\n"
+        "            if (bin < 0 || bin >= binCount) continue;\n"
+        "            uvec4 range = binRangeIn.binRanges[bin];\n"
+        "            for (uint i = 0u; i < range.y; ++i) {\n"
+        "                uint indexOffset = range.x + i;\n"
+        "                if (triangleBlocks(binIndexIn.binIndices[indexOffset], filterBySample, sampleMin, sampleMax, dir, dist)) return false;\n"
+        "            }\n"
+        "        }\n"
+        "    }\n"
+        "    return true;\n"
+        "}\n"
+        "bool spriteOcclusionVisible(vec2 p, float edgeDepth) {\n"
+        "    ivec2 center = ivec2(floor(p + vec2(0.5)));\n"
+        "    if (center.x < 0 || center.x >= screenSize.x || center.y < 0 || center.y >= screenSize.y) return true;\n"
+        "    int glY = screenSize.y - 1 - center.y;\n"
+        "    float sceneDepth = texelFetch(sceneDepthTexture, ivec2(center.x, glY), 0).r;\n"
+        "    float spriteDepth = texelFetch(afterSpritesDepthTexture, ivec2(center.x, glY), 0).r;\n"
+        "    const float edgeDepthBias = 0.00035;\n"
+        "    const float spriteDepthDelta = 0.00035;\n"
+        "    if (spriteDepth >= sceneDepth - spriteDepthDelta) return true;\n"
+        "    return edgeDepth <= spriteDepth + edgeDepthBias;\n"
+        "}\n"
+        "bool edgeSampleVisible(EdgeIn edge, float t) {\n"
+        "    atomicAdd(statsOut.stats[0], 1u);\n"
+        "    vec2 p = edgePointAt(edge, t);\n"
+        "    if (!scenePointVisible(edge, p, edgeRelPointAt(edge, t))) return false;\n"
+        "    return spriteOcclusionVisible(p, edgeDepthAt(edge, t));\n"
+        "}\n"
+        "float refineVisibilityBoundary(EdgeIn edge, float t0, bool visible0, float t1) {\n"
+        "    float lo = t0;\n"
+        "    float hi = t1;\n"
+        "    for (int i = 0; i < 8; ++i) {\n"
+        "        float mid = (lo + hi) * 0.5;\n"
+        "        if (edgeSampleVisible(edge, mid) == visible0) lo = mid;\n"
+        "        else hi = mid;\n"
+        "    }\n"
+        "    return (lo + hi) * 0.5;\n"
+        "}\n"
+        "void main() {\n"
+        "    uint jobIndex = gl_GlobalInvocationID.x;\n"
+        "    if (jobIndex >= uint(jobCount)) return;\n"
+        "    if (passId == 0) {\n"
+        "        uvec4 job = sampleJobIn.sampleJobs[jobIndex];\n"
+        "        uint edgeIndex = job.x;\n"
+        "        if (edgeIndex >= uint(edgeCount)) {\n"
+        "            sampleResultOut.sampleResults[jobIndex] = 0u;\n"
+        "            return;\n"
+        "        }\n"
+        "        EdgeIn edge = edgeIn.edges[edgeIndex];\n"
+        "        uint sampleIndex = job.y;\n"
+        "        uint sampleCount = max(job.z, 1u);\n"
+        "        float t = float(sampleIndex) / float(sampleCount);\n"
+        "        sampleResultOut.sampleResults[jobIndex] = edgeSampleVisible(edge, t) ? 1u : 0u;\n"
+        "        return;\n"
+        "    }\n"
+        "    RefineJob job = refineJobIn.refineJobs[jobIndex];\n"
+        "    uint edgeIndex = job.data.x;\n"
+        "    if (edgeIndex >= uint(edgeCount)) {\n"
+        "        refineResultOut.refineResults[jobIndex] = 0.0;\n"
+        "        return;\n"
+        "    }\n"
+        "    EdgeIn edge = edgeIn.edges[edgeIndex];\n"
+        "    bool visible0 = job.data.y != 0u;\n"
+        "    refineResultOut.refineResults[jobIndex] = refineVisibilityBoundary(edge, job.range.x, visible0, job.range.y);\n"
+        "}\n";
+
+    const u32 shader = rlLoadShader(cs, RL_COMPUTE_SHADER);
+    const u32 program = shader ? rlLoadShaderProgramCompute(shader) : 0;
+    if (shader) rlUnloadShader(shader);
+    if (!program) return 0;
+
+    if (renderer) {
+        Shader compute_shader{program, nullptr};
+        renderer->edge_filter_pass_id_loc = GetShaderLocation(compute_shader, "passId");
+        renderer->edge_filter_job_count_loc = GetShaderLocation(compute_shader, "jobCount");
+        renderer->edge_filter_edge_count_loc = GetShaderLocation(compute_shader, "edgeCount");
+        renderer->edge_filter_triangle_count_loc = GetShaderLocation(compute_shader, "triangleCount");
+        renderer->edge_filter_bin_count_loc = GetShaderLocation(compute_shader, "binCount");
+        renderer->edge_filter_unbounded_count_loc = GetShaderLocation(compute_shader, "unboundedCount");
+        renderer->edge_filter_screen_size_loc = GetShaderLocation(compute_shader, "screenSize");
+        renderer->edge_filter_camera_pos_loc = GetShaderLocation(compute_shader, "cameraPos");
+        renderer->edge_filter_brute_force_loc = GetShaderLocation(compute_shader, "bruteForceEdgeOcclusion");
+        renderer->edge_filter_scene_depth_texture_loc = GetShaderLocation(compute_shader, "sceneDepthTexture");
+        renderer->edge_filter_after_sprites_depth_texture_loc = GetShaderLocation(compute_shader, "afterSpritesDepthTexture");
+    }
+    if (out_ready) *out_ready = true;
+    return program;
+}
+
+static Texture2D load_edge_depth_texture(int width, int height, bool* out_ready) {
+    Texture2D texture{};
+    if (out_ready) *out_ready = false;
+    if (width <= 0 || height <= 0) return texture;
+
+    glGenTextures(1, &texture.id);
+    glBindTexture(GL_TEXTURE_2D, texture.id);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, width, height, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    texture.width = width;
+    texture.height = height;
+    texture.format = 19;
+    texture.mipmaps = 1;
+    if (out_ready) *out_ready = texture.id != 0 && glIsTexture(texture.id);
+    return texture;
+}
+
+static void unload_edge_depth_textures(RenderState* renderer) {
+    if (!renderer) return;
+    if (renderer->edge_depth_texture_ready) {
+        UnloadTexture(renderer->edge_depth_texture);
+        renderer->edge_depth_texture = {};
+        renderer->edge_depth_texture_ready = false;
+    }
+    if (renderer->edge_scene_depth_texture_ready) {
+        UnloadTexture(renderer->edge_scene_depth_texture);
+        renderer->edge_scene_depth_texture = {};
+        renderer->edge_scene_depth_texture_ready = false;
+    }
+}
+
+static void unload_edge_filter_buffer(u32* id, u32* capacity) {
+    if (id && *id) {
+        rlUnloadShaderBuffer(*id);
+        *id = 0;
+    }
+    if (capacity) *capacity = 0;
+}
+
+static void unload_edge_filter_buffers(RenderState* renderer) {
+    if (!renderer) return;
+    unload_edge_filter_buffer(&renderer->edge_filter_edges_ssbo, &renderer->edge_filter_edges_capacity);
+    unload_edge_filter_buffer(&renderer->edge_filter_triangles_ssbo, &renderer->edge_filter_triangles_capacity);
+    unload_edge_filter_buffer(&renderer->edge_filter_bin_ranges_ssbo, &renderer->edge_filter_bin_ranges_capacity);
+    unload_edge_filter_buffer(&renderer->edge_filter_bin_indices_ssbo, &renderer->edge_filter_bin_indices_capacity);
+    unload_edge_filter_buffer(&renderer->edge_filter_unbounded_ssbo, &renderer->edge_filter_unbounded_capacity);
+    unload_edge_filter_buffer(&renderer->edge_filter_sample_jobs_ssbo, &renderer->edge_filter_sample_jobs_capacity);
+    unload_edge_filter_buffer(&renderer->edge_filter_sample_results_ssbo, &renderer->edge_filter_sample_results_capacity);
+    unload_edge_filter_buffer(&renderer->edge_filter_refine_jobs_ssbo, &renderer->edge_filter_refine_jobs_capacity);
+    unload_edge_filter_buffer(&renderer->edge_filter_refine_results_ssbo, &renderer->edge_filter_refine_results_capacity);
+    unload_edge_filter_buffer(&renderer->edge_filter_stats_ssbo, &renderer->edge_filter_stats_capacity);
+}
+
 void renderer_init(RenderState* renderer) {
     renderer->white_texture = make_white_texture();
     renderer->white_ready = true;
     renderer->life_texture = load_texture_from_memory(".png", res_life_png, res_life_png_len, &renderer->life_ready);
     renderer->cross_texture = load_texture_from_memory(".png", res_cross_png, res_cross_png_len, &renderer->cross_ready);
     renderer->sprite_alpha_shader = load_sprite_alpha_shader(&renderer->sprite_alpha_shader_ready);
+    renderer->edge_depth_shader = load_edge_depth_shader(renderer, &renderer->edge_depth_shader_ready);
+    renderer->edge_filter_compute_program = load_edge_filter_compute_program(renderer, &renderer->edge_filter_compute_ready);
 
     renderer->font = LoadFontFromMemory(
         ".ttf",
@@ -111,9 +454,20 @@ void renderer_shutdown(RenderState* renderer) {
         UnloadTexture(renderer->cross_texture);
         renderer->cross_ready = false;
     }
+    unload_edge_depth_textures(renderer);
+    unload_edge_filter_buffers(renderer);
     if (renderer->sprite_alpha_shader_ready) {
         UnloadShader(renderer->sprite_alpha_shader);
         renderer->sprite_alpha_shader_ready = false;
+    }
+    if (renderer->edge_depth_shader_ready) {
+        UnloadShader(renderer->edge_depth_shader);
+        renderer->edge_depth_shader_ready = false;
+    }
+    if (renderer->edge_filter_compute_ready) {
+        rlUnloadShaderProgram(renderer->edge_filter_compute_program);
+        renderer->edge_filter_compute_program = 0;
+        renderer->edge_filter_compute_ready = false;
     }
     if (renderer->font_ready) {
         UnloadFont(renderer->font);
@@ -146,9 +500,12 @@ void renderer_ensure_target(RenderState* renderer) {
         UnloadRenderTexture(renderer->target);
         renderer->target_ready = false;
     }
+    unload_edge_depth_textures(renderer);
 
     renderer->target = LoadRenderTexture(native_w, native_h);
     SetTextureFilter(renderer->target.texture, TEXTURE_FILTER_POINT);
+    renderer->edge_depth_texture = load_edge_depth_texture(native_w, native_h, &renderer->edge_depth_texture_ready);
+    renderer->edge_scene_depth_texture = load_edge_depth_texture(native_w, native_h, &renderer->edge_scene_depth_texture_ready);
     renderer->target_ready = true;
     renderer->native_w = native_w;
     renderer->native_h = native_h;
@@ -181,6 +538,9 @@ static float fog_factor(const Dimension* dim, float chunk_dist) {
     return clampf((chunk_dist - qr) / (rr - qr), 0.0f, 1.0f);
 }
 
+constexpr float mesh_edge_render_radius_chunks = 5.0f;
+constexpr float min_mesh_edge_fade_span_chunks = 1.0f;
+
 static Color mix_color(Color a, Color b, float t) {
     t = clampf(t, 0.0f, 1.0f);
     return {
@@ -189,6 +549,32 @@ static Color mix_color(Color a, Color b, float t) {
         static_cast<unsigned char>(a.b + (b.b - a.b) * t),
         static_cast<unsigned char>(a.a + (b.a - a.a) * t),
     };
+}
+
+static Color color_with_alpha_factor(Color color, float alpha) {
+    color.a = static_cast<unsigned char>(clampf(static_cast<float>(color.a) * alpha, 0.0f, 255.0f));
+    return color;
+}
+
+static float mesh_edge_alpha(const Dimension* dim, float dist_chunks) {
+    if (!dim) return 0.0f;
+    const float edge_radius = fminf(static_cast<float>(dim->render_radius_chunks), mesh_edge_render_radius_chunks);
+    if (edge_radius <= 0.0f || dist_chunks >= edge_radius) return 0.0f;
+
+    float fade_start = fminf(static_cast<float>(dim->quality_render_radius_chunks), edge_radius);
+    if (fade_start >= edge_radius) {
+        fade_start = fmaxf(0.0f, edge_radius - min_mesh_edge_fade_span_chunks);
+    }
+    if (dist_chunks <= fade_start) return 1.0f;
+
+    const float fade_span = fmaxf(edge_radius - fade_start, 0.001f);
+    return 1.0f - clampf((dist_chunks - fade_start) / fade_span, 0.0f, 1.0f);
+}
+
+static bool mesh_edges_in_render_radius(const Dimension* dim, float dist_chunks) {
+    if (!dim) return false;
+    const float edge_radius = fminf(static_cast<float>(dim->render_radius_chunks), mesh_edge_render_radius_chunks);
+    return dist_chunks < edge_radius;
 }
 
 static void draw_engine_text(RenderState* renderer, const char* text, Vector2 pos, float size, Color color) {
@@ -236,13 +622,22 @@ struct ScreenEdge {
 };
 
 struct ScreenEdgeList {
-    std::array<ScreenEdge, max_render_edges> edges{};
+    std::vector<ScreenEdge> edges{};
     u32 count = 0;
+    u32 max_count = max_render_edges;
 };
+
+struct EdgeVisibleInterval {
+    float start = 0.0f;
+    float end = 0.0f;
+};
+
+constexpr size_t parallel_mesh_prep_min_jobs = 8192;
 
 constexpr int scene_occlusion_grid_cols = 32;
 constexpr int scene_occlusion_grid_rows = 18;
 constexpr int scene_occlusion_grid_count = scene_occlusion_grid_cols * scene_occlusion_grid_rows;
+constexpr u32 edge_filter_compute_local_size = 64;
 
 struct SceneTriangle {
     Vector3 a{};
@@ -280,6 +675,59 @@ struct ProjectedEdgePoint {
     float depth = 0.0f;
     float inv_w = 1.0f;
 };
+
+struct GpuScreenEdge {
+    Vector4 a{};
+    Vector4 b{};
+    Vector4 rel_a{};
+    Vector4 rel_b{};
+};
+
+struct GpuSceneTriangle {
+    Vector4 a_valid{};
+    Vector4 e1{};
+    Vector4 e2{};
+    Vector4 bounds{};
+};
+
+struct GpuBinRange {
+    u32 offset = 0;
+    u32 count = 0;
+    u32 pad0 = 0;
+    u32 pad1 = 0;
+};
+
+struct GpuEdgeSampleJob {
+    u32 edge_index = 0;
+    u32 sample_index = 0;
+    u32 sample_count = 1;
+    u32 pad0 = 0;
+};
+
+struct GpuEdgeRefineJob {
+    u32 edge_index = 0;
+    u32 visible0 = 0;
+    u32 pad0 = 0;
+    u32 pad1 = 0;
+    float t0 = 0.0f;
+    float t1 = 0.0f;
+    float pad2 = 0.0f;
+    float pad3 = 0.0f;
+};
+
+struct GpuEdgeStats {
+    u32 samples = 0;
+    u32 candidates = 0;
+    u32 ray_tests = 0;
+    u32 overflow = 0;
+};
+
+static_assert(sizeof(GpuScreenEdge) == sizeof(float) * 16);
+static_assert(sizeof(GpuSceneTriangle) == sizeof(float) * 16);
+static_assert(sizeof(GpuBinRange) == sizeof(u32) * 4);
+static_assert(sizeof(GpuEdgeSampleJob) == sizeof(u32) * 4);
+static_assert(sizeof(GpuEdgeRefineJob) == sizeof(u32) * 4 + sizeof(float) * 4);
+static_assert(sizeof(GpuEdgeStats) == sizeof(u32) * 4);
 
 static void gather_point_scene_candidates(SceneTriangleList& scene, Vector2 point, bool brute_force, SceneCandidateTileCache* cache);
 static bool screen_bboxes_overlap(Vector2 a_min, Vector2 a_max, Vector2 b_min, Vector2 b_max);
@@ -332,9 +780,8 @@ static bool clip_screen_edge(Vector2* a, Vector2* b, float* depth_a, float* dept
     return Vector2Length(*b - *a) > 0.001f;
 }
 
-static bool clip_edge_to_near_plane(Vector3* a, Vector3* b, const Camera3D& camera) {
+static bool clip_edge_to_near_plane(Vector3* a, Vector3* b, const Camera3D& camera, float near_plane) {
     const Vector3 forward = safe_norm(camera.target - camera.position, {0.0f, 0.0f, -1.0f});
-    const float near_plane = static_cast<float>(rlGetCullDistanceNear());
     const float da = Vector3DotProduct(*a - camera.position, forward);
     const float db = Vector3DotProduct(*b - camera.position, forward);
     if (da < near_plane && db < near_plane) return false;
@@ -418,9 +865,8 @@ enum SceneTriangleProjection {
     scene_triangle_unbounded,
 };
 
-static SceneTriangleProjection clipped_triangle_screen_bounds(Vector3 a, Vector3 b, Vector3 c, const Camera3D& camera, const Matrix& view_matrix, const Matrix& projection_matrix, int width, int height, Vector2* out_min, Vector2* out_max) {
+static SceneTriangleProjection clipped_triangle_screen_bounds(Vector3 a, Vector3 b, Vector3 c, const Camera3D& camera, const Matrix& view_matrix, const Matrix& projection_matrix, int width, int height, float near_plane, Vector2* out_min, Vector2* out_max) {
     const Vector3 camera_forward = safe_norm(camera.target - camera.position, {0.0f, 0.0f, -1.0f});
-    const float near_plane = static_cast<float>(rlGetCullDistanceNear());
     const Vector3 input[3] = {a, b, c};
     const float dist[3] = {
         Vector3DotProduct(a - camera.position, camera_forward) - near_plane,
@@ -485,7 +931,7 @@ static Vector3 perspective_lerp_rel(Vector3 a, Vector3 b, float inv_w_a, float i
 }
 
 static void push_screen_edge(ScreenEdgeList* list, ProjectedEdgePoint a, ProjectedEdgePoint b, Vector3 rel_a, Vector3 rel_b, int width, int height, Color color, u8 thickness_px, bool use_scene_occlusion) {
-    if (list->count >= max_render_edges) return;
+    if (!list || list->count >= list->max_count) return;
 
     const Vector3 original_rel_a = rel_a;
     const Vector3 original_rel_b = rel_b;
@@ -500,7 +946,8 @@ static void push_screen_edge(ScreenEdgeList* list, ProjectedEdgePoint a, Project
     b.inv_w = lerp_float(original_inv_w_a, original_inv_w_b, clip_t1);
     const Vector3 clipped_rel_a = perspective_lerp_rel(original_rel_a, original_rel_b, original_inv_w_a, original_inv_w_b, clip_t0);
     const Vector3 clipped_rel_b = perspective_lerp_rel(original_rel_a, original_rel_b, original_inv_w_a, original_inv_w_b, clip_t1);
-    list->edges[list->count++] = {a.screen, b.screen, a.depth, b.depth, a.inv_w, b.inv_w, clipped_rel_a, clipped_rel_b, color, thickness, use_scene_occlusion};
+    list->edges.push_back({a.screen, b.screen, a.depth, b.depth, a.inv_w, b.inv_w, clipped_rel_a, clipped_rel_b, color, thickness, use_scene_occlusion});
+    list->count = static_cast<u32>(list->edges.size());
 }
 
 static void draw_flat_screen_edges(const ScreenEdgeList* list) {
@@ -509,6 +956,67 @@ static void draw_flat_screen_edges(const ScreenEdgeList* list) {
         const ScreenEdge& edge = list->edges[i];
         DrawLineEx(edge.a, edge.b, edge.thickness, edge.color);
     }
+}
+
+static void copy_current_depth_to_texture(RenderState* renderer, const Texture2D& texture, bool ready) {
+    if (!renderer || !ready || texture.id == 0) return;
+
+    rlDrawRenderBatchActive();
+    glBindTexture(GL_TEXTURE_2D, texture.id);
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, renderer->native_w, renderer->native_h);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+static void draw_shader_depth_edge_quad(const ScreenEdge& edge) {
+    const Vector2 delta = edge.b - edge.a;
+    const float length = Vector2Length(delta);
+    if (length <= 0.0f || edge.thickness <= 0.0f) return;
+
+    const float scale = edge.thickness / (2.0f * length);
+    const Vector2 radius = {-scale * delta.y, scale * delta.x};
+    const Vector2 strip[4] = {
+        edge.a - radius,
+        edge.a + radius,
+        edge.b - radius,
+        edge.b + radius,
+    };
+
+    rlBegin(RL_TRIANGLES);
+        rlColor4ub(edge.color.r, edge.color.g, edge.color.b, edge.color.a);
+
+        rlTexCoord2f(edge.b.x, edge.b.y);
+        rlVertex3f(strip[2].x, strip[2].y, edge.depth_b);
+        rlTexCoord2f(edge.a.x, edge.a.y);
+        rlVertex3f(strip[0].x, strip[0].y, edge.depth_a);
+        rlTexCoord2f(edge.a.x, edge.a.y);
+        rlVertex3f(strip[1].x, strip[1].y, edge.depth_a);
+
+        rlTexCoord2f(edge.b.x, edge.b.y);
+        rlVertex3f(strip[3].x, strip[3].y, edge.depth_b);
+        rlTexCoord2f(edge.b.x, edge.b.y);
+        rlVertex3f(strip[2].x, strip[2].y, edge.depth_b);
+        rlTexCoord2f(edge.a.x, edge.a.y);
+        rlVertex3f(strip[1].x, strip[1].y, edge.depth_a);
+    rlEnd();
+}
+
+static void draw_shader_depth_screen_edges(RenderState* renderer, const ScreenEdgeList* list, bool hardware_depth_test) {
+    if (!renderer || !list || list->count == 0 || !renderer->edge_depth_shader_ready || !renderer->edge_depth_texture_ready) return;
+
+    if (hardware_depth_test) rlEnableDepthTest();
+    else rlDisableDepthTest();
+    rlDisableDepthMask();
+
+    BeginShaderMode(renderer->edge_depth_shader);
+    SetShaderValueTexture(renderer->edge_depth_shader, renderer->edge_depth_texture_loc, renderer->edge_depth_texture);
+    SetShaderValue(renderer->edge_depth_shader, renderer->edge_depth_bias_loc, &renderer->edge_depth_bias, SHADER_UNIFORM_FLOAT);
+    for (u32 i = 0; i < list->count; ++i) {
+        draw_shader_depth_edge_quad(list->edges[i]);
+    }
+    EndShaderMode();
+
+    if (hardware_depth_test) rlDisableDepthTest();
+    rlEnableDepthMask();
 }
 
 struct DepthBuffer {
@@ -677,11 +1185,6 @@ static void draw_edge_segment(const ScreenEdge& edge, float t0, float t1) {
     DrawLineEx(a, b, edge.thickness, edge.color);
 }
 
-struct EdgeVisibleInterval {
-    float start = 0.0f;
-    float end = 0.0f;
-};
-
 static void draw_edge_intervals(const ScreenEdge& edge, const std::vector<EdgeVisibleInterval>& raw_intervals) {
     if (raw_intervals.empty()) return;
 
@@ -707,6 +1210,55 @@ static void draw_edge_intervals(const ScreenEdge& edge, const std::vector<EdgeVi
 
     for (const EdgeVisibleInterval& interval : intervals) {
         draw_edge_segment(edge, interval.start, interval.end);
+    }
+}
+
+static void push_edge_interval(ScreenEdgeList* out, const ScreenEdge& edge, float t0, float t1) {
+    if (!out || out->count >= out->max_count) return;
+    t0 = clampf(t0, 0.0f, 1.0f);
+    t1 = clampf(t1, 0.0f, 1.0f);
+    if (t1 <= t0) return;
+
+    ScreenEdge segment = edge;
+    segment.a = edge_point_at(edge, t0);
+    segment.b = edge_point_at(edge, t1);
+    if (Vector2Length(segment.b - segment.a) < 0.75f) return;
+
+    segment.depth_a = edge_depth_at(edge, t0);
+    segment.depth_b = edge_depth_at(edge, t1);
+    segment.inv_w_a = lerp_float(edge.inv_w_a, edge.inv_w_b, t0);
+    segment.inv_w_b = lerp_float(edge.inv_w_a, edge.inv_w_b, t1);
+    segment.rel_a = edge_rel_point_at(edge, t0);
+    segment.rel_b = edge_rel_point_at(edge, t1);
+    out->edges.push_back(segment);
+    out->count = static_cast<u32>(out->edges.size());
+}
+
+static void push_edge_intervals(ScreenEdgeList* out, const ScreenEdge& edge, const std::vector<EdgeVisibleInterval>& raw_intervals) {
+    if (!out || raw_intervals.empty()) return;
+
+    const float edge_len = Vector2Length(edge.b - edge.a);
+    if (edge_len < 0.75f) return;
+
+    constexpr float min_visible_px = 3.0f;
+    constexpr float merge_gap_px = 4.0f;
+    std::vector<EdgeVisibleInterval> intervals;
+    intervals.reserve(raw_intervals.size());
+
+    for (EdgeVisibleInterval interval : raw_intervals) {
+        interval.start = clampf(interval.start, 0.0f, 1.0f);
+        interval.end = clampf(interval.end, 0.0f, 1.0f);
+        if ((interval.end - interval.start) * edge_len < min_visible_px) continue;
+
+        if (!intervals.empty() && (interval.start - intervals.back().end) * edge_len <= merge_gap_px) {
+            intervals.back().end = interval.end;
+        } else {
+            intervals.push_back(interval);
+        }
+    }
+
+    for (const EdgeVisibleInterval& interval : intervals) {
+        push_edge_interval(out, edge, interval.start, interval.end);
     }
 }
 
@@ -782,15 +1334,13 @@ static void gather_point_scene_candidates(SceneTriangleList& scene, Vector2 poin
     }
 }
 
-static void draw_depth_cut_screen_edges(RenderState* renderer, const ScreenEdgeList* list, const SpriteDepthOcclusion& sprite_occlusion, SceneTriangleList& scene, Vector3 camera_pos) {
-    if (!list || list->count == 0) return;
-
-    rlDisableDepthTest();
-    rlEnableDepthMask();
+static void filter_depth_cut_screen_edges(RenderState* renderer, const ScreenEdgeList* list, const SpriteDepthOcclusion& sprite_occlusion, SceneTriangleList& scene, Vector3 camera_pos, ScreenEdgeList* out) {
+    if (!list || list->count == 0 || !out) return;
 
     SceneCandidateTileCache scene_cache{};
     scene_cache.candidates.reserve(64);
 
+    out->edges.reserve(std::min<size_t>(list->edges.size(), out->max_count));
     for (u32 i = 0; i < list->count; ++i) {
         const ScreenEdge& edge = list->edges[i];
         scene_cache.valid = false;
@@ -819,21 +1369,331 @@ static void draw_depth_cut_screen_edges(RenderState* renderer, const ScreenEdgeL
         }
 
         if (prev_visible) intervals.push_back({visible_start, 1.0f});
-        draw_edge_intervals(edge, intervals);
+        push_edge_intervals(out, edge, intervals);
+        if (out->count >= out->max_count) return;
     }
 }
 
-static void push_world_screen_edge(RenderState* renderer, const Camera3D& camera, const Matrix& view_matrix, const Matrix& projection_matrix, ScreenEdgeList* edge_list, Vector3 a, Vector3 b, Color color, u8 thickness_px, bool use_scene_occlusion = true) {
-    if (!clip_edge_to_near_plane(&a, &b, camera)) return;
+static GpuScreenEdge to_gpu_screen_edge(const ScreenEdge& edge) {
+    return {
+        {edge.a.x, edge.a.y, edge.depth_a, edge.inv_w_a},
+        {edge.b.x, edge.b.y, edge.depth_b, edge.inv_w_b},
+        {edge.rel_a.x, edge.rel_a.y, edge.rel_a.z, edge.thickness},
+        {edge.rel_b.x, edge.rel_b.y, edge.rel_b.z, edge.use_scene_occlusion ? 1.0f : 0.0f},
+    };
+}
+
+static GpuSceneTriangle to_gpu_scene_triangle(const SceneTriangle& tri) {
+    return {
+        {tri.a.x, tri.a.y, tri.a.z, tri.screen_bounds_valid ? 1.0f : 0.0f},
+        {tri.e1.x, tri.e1.y, tri.e1.z, 0.0f},
+        {tri.e2.x, tri.e2.y, tri.e2.z, 0.0f},
+        {tri.screen_min.x, tri.screen_min.y, tri.screen_max.x, tri.screen_max.y},
+    };
+}
+
+static bool update_edge_filter_buffer(u32* id, u32* capacity, const void* data, size_t byte_count, int usage_hint) {
+    if (!id || !capacity) return false;
+
+    const size_t alloc_size = std::max<size_t>(byte_count, 16);
+    if (alloc_size > static_cast<size_t>(std::numeric_limits<u32>::max())) return false;
+    const u32 alloc_bytes = static_cast<u32>(alloc_size);
+
+    if (*id == 0 || *capacity < alloc_bytes) {
+        if (*id) rlUnloadShaderBuffer(*id);
+        *id = rlLoadShaderBuffer(alloc_bytes, nullptr, usage_hint);
+        *capacity = *id ? alloc_bytes : 0;
+    }
+    if (*id == 0) return false;
+
+    if (data && byte_count > 0) {
+        if (byte_count > static_cast<size_t>(std::numeric_limits<u32>::max())) return false;
+        rlUpdateShaderBuffer(*id, data, static_cast<u32>(byte_count), 0);
+    }
+    return true;
+}
+
+static bool filter_depth_cut_screen_edges_compute(RenderState* renderer, const ScreenEdgeList* list, SceneTriangleList& scene, Vector3 camera_pos, ScreenEdgeList* out) {
+    if (!renderer || !list || !out) return false;
+    if (list->count == 0) return true;
+    if (!renderer->edge_filter_compute_ready || !renderer->edge_scene_depth_texture_ready || !renderer->edge_depth_texture_ready) return false;
+
+    struct EdgeSampleRange {
+        u32 offset = 0;
+        u32 sample_count = 1;
+    };
+
+    struct EdgeRefineEvent {
+        u32 job_index = 0;
+        bool visible0 = false;
+    };
+
+    const u32 edge_count = list->count;
+    const u32 triangle_count = static_cast<u32>(scene.triangles.size());
+    const u32 unbounded_count = static_cast<u32>(scene.unbounded.size());
+
+    std::vector<GpuScreenEdge> gpu_edges;
+    gpu_edges.reserve(edge_count);
+    for (u32 i = 0; i < edge_count; ++i) {
+        gpu_edges.push_back(to_gpu_screen_edge(list->edges[i]));
+    }
+
+    std::vector<GpuSceneTriangle> gpu_triangles;
+    gpu_triangles.reserve(scene.triangles.size());
+    for (const SceneTriangle& tri : scene.triangles) {
+        gpu_triangles.push_back(to_gpu_scene_triangle(tri));
+    }
+
+    std::array<GpuBinRange, scene_occlusion_grid_count> gpu_bin_ranges{};
+    std::vector<u32> gpu_bin_indices;
+    size_t bin_index_count = 0;
+    for (const std::vector<u32>& bin : scene.bins) {
+        bin_index_count += bin.size();
+    }
+    gpu_bin_indices.reserve(bin_index_count);
+    for (int i = 0; i < scene_occlusion_grid_count; ++i) {
+        const std::vector<u32>& bin = scene.bins[i];
+        gpu_bin_ranges[i].offset = static_cast<u32>(gpu_bin_indices.size());
+        gpu_bin_ranges[i].count = static_cast<u32>(bin.size());
+        for (u32 tri_index : bin) {
+            gpu_bin_indices.push_back(tri_index);
+        }
+    }
+
+    std::vector<EdgeSampleRange> sample_ranges(edge_count);
+    std::vector<GpuEdgeSampleJob> sample_jobs;
+    sample_jobs.reserve(static_cast<size_t>(edge_count) * 8);
+    constexpr float edge_visibility_sample_step_px = 3.0f;
+    for (u32 edge_i = 0; edge_i < edge_count; ++edge_i) {
+        const ScreenEdge& edge = list->edges[edge_i];
+        const Vector2 d = edge.b - edge.a;
+        const float dominant_len = fmaxf(fabsf(d.x), fabsf(d.y));
+        const u32 sample_count = static_cast<u32>(fmaxf(1.0f, ceilf(dominant_len / edge_visibility_sample_step_px)));
+        const size_t result_count = static_cast<size_t>(sample_count) + 1;
+        if (result_count > static_cast<size_t>(std::numeric_limits<u32>::max()) ||
+            sample_jobs.size() > static_cast<size_t>(std::numeric_limits<u32>::max()) - result_count) {
+            return false;
+        }
+
+        sample_ranges[edge_i] = {static_cast<u32>(sample_jobs.size()), sample_count};
+        for (u32 sample_i = 0; sample_i <= sample_count; ++sample_i) {
+            sample_jobs.push_back({edge_i, sample_i, sample_count, 0});
+        }
+    }
+    if (sample_jobs.empty() || sample_jobs.size() > static_cast<size_t>(std::numeric_limits<int>::max())) return false;
+
+    const size_t edge_bytes = gpu_edges.size() * sizeof(GpuScreenEdge);
+    const size_t triangle_bytes = gpu_triangles.size() * sizeof(GpuSceneTriangle);
+    const size_t bin_range_bytes = gpu_bin_ranges.size() * sizeof(GpuBinRange);
+    const size_t bin_index_bytes = gpu_bin_indices.size() * sizeof(u32);
+    const size_t unbounded_bytes = scene.unbounded.size() * sizeof(u32);
+    const size_t sample_job_bytes = sample_jobs.size() * sizeof(GpuEdgeSampleJob);
+    const size_t sample_result_bytes = sample_jobs.size() * sizeof(u32);
+    if (sample_job_bytes > static_cast<size_t>(std::numeric_limits<u32>::max()) ||
+        sample_result_bytes > static_cast<size_t>(std::numeric_limits<u32>::max())) {
+        return false;
+    }
+
+    GpuEdgeStats zero_stats{};
+    if (!update_edge_filter_buffer(&renderer->edge_filter_edges_ssbo, &renderer->edge_filter_edges_capacity, gpu_edges.data(), edge_bytes, RL_DYNAMIC_COPY)) return false;
+    if (!update_edge_filter_buffer(&renderer->edge_filter_triangles_ssbo, &renderer->edge_filter_triangles_capacity, gpu_triangles.data(), triangle_bytes, RL_DYNAMIC_COPY)) return false;
+    if (!update_edge_filter_buffer(&renderer->edge_filter_bin_ranges_ssbo, &renderer->edge_filter_bin_ranges_capacity, gpu_bin_ranges.data(), bin_range_bytes, RL_DYNAMIC_COPY)) return false;
+    if (!update_edge_filter_buffer(&renderer->edge_filter_bin_indices_ssbo, &renderer->edge_filter_bin_indices_capacity, gpu_bin_indices.empty() ? nullptr : gpu_bin_indices.data(), bin_index_bytes, RL_DYNAMIC_COPY)) return false;
+    if (!update_edge_filter_buffer(&renderer->edge_filter_unbounded_ssbo, &renderer->edge_filter_unbounded_capacity, scene.unbounded.empty() ? nullptr : scene.unbounded.data(), unbounded_bytes, RL_DYNAMIC_COPY)) return false;
+    if (!update_edge_filter_buffer(&renderer->edge_filter_sample_jobs_ssbo, &renderer->edge_filter_sample_jobs_capacity, sample_jobs.data(), sample_job_bytes, RL_DYNAMIC_COPY)) return false;
+    if (!update_edge_filter_buffer(&renderer->edge_filter_sample_results_ssbo, &renderer->edge_filter_sample_results_capacity, nullptr, sample_result_bytes, RL_DYNAMIC_COPY)) return false;
+    if (!update_edge_filter_buffer(&renderer->edge_filter_stats_ssbo, &renderer->edge_filter_stats_capacity, &zero_stats, sizeof(zero_stats), RL_DYNAMIC_COPY)) return false;
+
+    Shader compute_shader{renderer->edge_filter_compute_program, nullptr};
+    const int edge_count_i = static_cast<int>(edge_count);
+    const int triangle_count_i = static_cast<int>(triangle_count);
+    const int bin_count_i = scene_occlusion_grid_count;
+    const int unbounded_count_i = static_cast<int>(unbounded_count);
+    const int screen_size[2] = {renderer->native_w, renderer->native_h};
+    const int brute_force = renderer->brute_force_edge_occlusion ? 1 : 0;
+    const float camera_pos_uniform[3] = {camera_pos.x, camera_pos.y, camera_pos.z};
+
+    auto bind_common_compute_state = [&]() {
+        SetShaderValue(compute_shader, renderer->edge_filter_edge_count_loc, &edge_count_i, SHADER_UNIFORM_INT);
+        SetShaderValue(compute_shader, renderer->edge_filter_triangle_count_loc, &triangle_count_i, SHADER_UNIFORM_INT);
+        SetShaderValue(compute_shader, renderer->edge_filter_bin_count_loc, &bin_count_i, SHADER_UNIFORM_INT);
+        SetShaderValue(compute_shader, renderer->edge_filter_unbounded_count_loc, &unbounded_count_i, SHADER_UNIFORM_INT);
+        SetShaderValue(compute_shader, renderer->edge_filter_screen_size_loc, screen_size, SHADER_UNIFORM_IVEC2);
+        SetShaderValue(compute_shader, renderer->edge_filter_camera_pos_loc, camera_pos_uniform, SHADER_UNIFORM_VEC3);
+        SetShaderValue(compute_shader, renderer->edge_filter_brute_force_loc, &brute_force, SHADER_UNIFORM_INT);
+        SetShaderValueTexture(compute_shader, renderer->edge_filter_scene_depth_texture_loc, renderer->edge_scene_depth_texture);
+        SetShaderValueTexture(compute_shader, renderer->edge_filter_after_sprites_depth_texture_loc, renderer->edge_depth_texture);
+        rlBindShaderBuffer(renderer->edge_filter_edges_ssbo, 1);
+        rlBindShaderBuffer(renderer->edge_filter_triangles_ssbo, 2);
+        rlBindShaderBuffer(renderer->edge_filter_bin_ranges_ssbo, 3);
+        rlBindShaderBuffer(renderer->edge_filter_bin_indices_ssbo, 4);
+        rlBindShaderBuffer(renderer->edge_filter_unbounded_ssbo, 5);
+        rlBindShaderBuffer(renderer->edge_filter_sample_jobs_ssbo, 6);
+        rlBindShaderBuffer(renderer->edge_filter_sample_results_ssbo, 7);
+        rlBindShaderBuffer(renderer->edge_filter_stats_ssbo, 10);
+    };
+
+    int pass_id = 0;
+    int job_count = static_cast<int>(sample_jobs.size());
+    rlEnableShader(renderer->edge_filter_compute_program);
+    bind_common_compute_state();
+    SetShaderValue(compute_shader, renderer->edge_filter_pass_id_loc, &pass_id, SHADER_UNIFORM_INT);
+    SetShaderValue(compute_shader, renderer->edge_filter_job_count_loc, &job_count, SHADER_UNIFORM_INT);
+    rlComputeShaderDispatch((static_cast<u32>(sample_jobs.size()) + edge_filter_compute_local_size - 1) / edge_filter_compute_local_size, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    rlDisableShader();
+
+    std::vector<u32> sample_results(sample_jobs.size());
+    rlReadShaderBuffer(renderer->edge_filter_sample_results_ssbo, sample_results.data(), static_cast<u32>(sample_result_bytes), 0);
+
+    std::vector<u8> initial_visible(edge_count, 0);
+    std::vector<u8> final_visible(edge_count, 0);
+    std::vector<std::vector<EdgeRefineEvent>> refine_events(edge_count);
+    std::vector<GpuEdgeRefineJob> refine_jobs;
+    refine_jobs.reserve(edge_count);
+    for (u32 edge_i = 0; edge_i < edge_count; ++edge_i) {
+        const EdgeSampleRange range = sample_ranges[edge_i];
+        const size_t offset = range.offset;
+        bool prev_visible = sample_results[offset] != 0;
+        float prev_t = 0.0f;
+        initial_visible[edge_i] = prev_visible ? 1 : 0;
+
+        for (u32 sample_i = 1; sample_i <= range.sample_count; ++sample_i) {
+            const bool visible = sample_results[offset + sample_i] != 0;
+            const float t = static_cast<float>(sample_i) / static_cast<float>(range.sample_count);
+            if (visible != prev_visible) {
+                if (refine_jobs.size() >= static_cast<size_t>(std::numeric_limits<u32>::max())) return false;
+                const u32 job_index = static_cast<u32>(refine_jobs.size());
+                refine_jobs.push_back({edge_i, prev_visible ? 1u : 0u, 0, 0, prev_t, t, 0.0f, 0.0f});
+                refine_events[edge_i].push_back({job_index, prev_visible});
+            }
+            prev_t = t;
+            prev_visible = visible;
+        }
+
+        final_visible[edge_i] = prev_visible ? 1 : 0;
+    }
+
+    std::vector<float> refine_results(refine_jobs.size(), 0.0f);
+    if (!refine_jobs.empty()) {
+        if (refine_jobs.size() > static_cast<size_t>(std::numeric_limits<int>::max())) return false;
+        const size_t refine_job_bytes = refine_jobs.size() * sizeof(GpuEdgeRefineJob);
+        const size_t refine_result_bytes = refine_jobs.size() * sizeof(float);
+        if (refine_job_bytes > static_cast<size_t>(std::numeric_limits<u32>::max()) ||
+            refine_result_bytes > static_cast<size_t>(std::numeric_limits<u32>::max())) {
+            return false;
+        }
+
+        if (!update_edge_filter_buffer(&renderer->edge_filter_refine_jobs_ssbo, &renderer->edge_filter_refine_jobs_capacity, refine_jobs.data(), refine_job_bytes, RL_DYNAMIC_COPY)) return false;
+        if (!update_edge_filter_buffer(&renderer->edge_filter_refine_results_ssbo, &renderer->edge_filter_refine_results_capacity, nullptr, refine_result_bytes, RL_DYNAMIC_COPY)) return false;
+
+        pass_id = 1;
+        job_count = static_cast<int>(refine_jobs.size());
+        rlEnableShader(renderer->edge_filter_compute_program);
+        bind_common_compute_state();
+        rlBindShaderBuffer(renderer->edge_filter_refine_jobs_ssbo, 8);
+        rlBindShaderBuffer(renderer->edge_filter_refine_results_ssbo, 9);
+        SetShaderValue(compute_shader, renderer->edge_filter_pass_id_loc, &pass_id, SHADER_UNIFORM_INT);
+        SetShaderValue(compute_shader, renderer->edge_filter_job_count_loc, &job_count, SHADER_UNIFORM_INT);
+        rlComputeShaderDispatch((static_cast<u32>(refine_jobs.size()) + edge_filter_compute_local_size - 1) / edge_filter_compute_local_size, 1, 1);
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+        rlDisableShader();
+
+        rlReadShaderBuffer(renderer->edge_filter_refine_results_ssbo, refine_results.data(), static_cast<u32>(refine_result_bytes), 0);
+    }
+
+    GpuEdgeStats stats{};
+    rlReadShaderBuffer(renderer->edge_filter_stats_ssbo, &stats, sizeof(stats), 0);
+    if (stats.overflow) return false;
+
+    out->edges.reserve(std::min<size_t>(list->edges.size(), out->max_count));
+    std::vector<EdgeVisibleInterval> raw_intervals;
+    raw_intervals.reserve(16);
+    for (u32 edge_i = 0; edge_i < edge_count; ++edge_i) {
+        raw_intervals.clear();
+
+        float visible_start = initial_visible[edge_i] ? 0.0f : -1.0f;
+        for (const EdgeRefineEvent& event : refine_events[edge_i]) {
+            if (event.job_index >= refine_results.size()) return false;
+            const float boundary = refine_results[event.job_index];
+            if (event.visible0) raw_intervals.push_back({visible_start, boundary});
+            else visible_start = boundary;
+        }
+        if (final_visible[edge_i]) raw_intervals.push_back({visible_start, 1.0f});
+
+        push_edge_intervals(out, list->edges[edge_i], raw_intervals);
+        if (out->count >= out->max_count) break;
+    }
+
+    renderer->debug_edge_sample_count = stats.samples;
+    renderer->debug_edge_candidate_count = stats.candidates;
+    renderer->debug_edge_ray_test_count = stats.ray_tests;
+    return true;
+}
+
+static void push_world_screen_edge(const Camera3D& camera, const Matrix& view_matrix, const Matrix& projection_matrix, int width, int height, float near_plane, ScreenEdgeList* edge_list, Vector3 a, Vector3 b, Color color, u8 thickness_px, bool use_scene_occlusion = true) {
+    if (!clip_edge_to_near_plane(&a, &b, camera, near_plane)) return;
 
     ProjectedEdgePoint pa{};
     ProjectedEdgePoint pb{};
-    if (!project_edge_point(a, view_matrix, projection_matrix, renderer->native_w, renderer->native_h, &pa)) return;
-    if (!project_edge_point(b, view_matrix, projection_matrix, renderer->native_w, renderer->native_h, &pb)) return;
-    push_screen_edge(edge_list, pa, pb, a, b, renderer->native_w, renderer->native_h, color, thickness_px, use_scene_occlusion);
+    if (!project_edge_point(a, view_matrix, projection_matrix, width, height, &pa)) return;
+    if (!project_edge_point(b, view_matrix, projection_matrix, width, height, &pb)) return;
+    push_screen_edge(edge_list, pa, pb, a, b, width, height, color, thickness_px, use_scene_occlusion);
 }
 
-static void draw_mesh_instance(RenderState* renderer, Dimension* dim, const CameraView& view, const Camera3D& camera, const Matrix& view_matrix, const Matrix& projection_matrix, ScreenEdgeList* edge_list, SceneTriangleList* scene_triangles, const MeshInstance* mesh, float chunk_dist) {
+struct PreparedTriangle {
+    Vector3 a{};
+    Vector3 b{};
+    Vector3 c{};
+    Color color = WHITE;
+};
+
+struct PreparedRenderBuffer {
+    std::vector<PreparedTriangle> triangles{};
+    ScreenEdgeList edge_list{};
+    std::vector<SceneTriangle> scene_triangles{};
+};
+
+struct PreparedRenderBatch {
+    std::vector<PreparedRenderBuffer> buffers{};
+    ScreenEdgeList edge_list{};
+};
+
+struct MeshPrepJob {
+    const MeshInstance* mesh = nullptr;
+    float chunk_dist = 0.0f;
+};
+
+struct VisibleChunkRef {
+    const Chunk* chunk = nullptr;
+    float chunk_dist = 0.0f;
+};
+
+static void append_scene_triangle(SceneTriangleList* scene, const SceneTriangle& tri) {
+    if (!scene) return;
+    const u32 tri_index = static_cast<u32>(scene->triangles.size());
+    scene->triangles.push_back(tri);
+    add_scene_triangle_to_grid(scene, tri_index);
+}
+
+static void push_prepared_scene_triangle(std::vector<SceneTriangle>* out, Vector3 rel_a, Vector3 rel_b, Vector3 rel_c, SceneTriangleProjection projection, Vector2 screen_min = {}, Vector2 screen_max = {}) {
+    if (!out || projection == scene_triangle_skip) return;
+
+    SceneTriangle tri{};
+    tri.a = rel_a;
+    tri.b = rel_b;
+    tri.c = rel_c;
+    tri.e1 = rel_b - rel_a;
+    tri.e2 = rel_c - rel_a;
+    if (projection == scene_triangle_bounded) {
+        tri.screen_min = screen_min;
+        tri.screen_max = screen_max;
+        tri.screen_bounds_valid = true;
+    }
+    out->push_back(tri);
+}
+
+static void prepare_mesh_instance(RenderState* renderer, Dimension* dim, const CameraView& view, const Camera3D& camera, const Matrix& view_matrix, const Matrix& projection_matrix, float near_plane, PreparedRenderBuffer* out, bool collect_scene_triangles, const MeshInstance* mesh, float chunk_dist) {
     if (!mesh || !mesh->visible) return;
     u32 geometry_id = mesh->geometry;
     const MeshGeometry* geometry = arena_get(&dim->geometries, geometry_id);
@@ -846,6 +1706,7 @@ static void draw_mesh_instance(RenderState* renderer, Dimension* dim, const Came
 
     Vector3 transformed[max_vertices_per_geometry]{};
     const Vector3 origin = world_delta_meters(mesh->origin, view.anchor, dim->chunk_size_m);
+    const float mesh_dist_chunks = safe_len(origin) / fmaxf(dim->chunk_size_m, 0.001f);
     const Matrix basis = matrix_no_translation(mesh->se3);
     for (u32 i = 0; i < geometry->vertex_count; ++i) {
         transformed[i] = Vector3Transform(geometry->vertices[i], basis) + origin;
@@ -853,6 +1714,7 @@ static void draw_mesh_instance(RenderState* renderer, Dimension* dim, const Came
 
     Color base = resolve_mesh_color(mesh);
     const float ff = fog_factor(dim, chunk_dist);
+    const bool collect_mesh_scene_triangles = collect_scene_triangles && mesh_edges_in_render_radius(dim, mesh_dist_chunks);
 
     for (u32 i = 0; i < geometry->triangle_count; ++i) {
         const Triangle tri = geometry->triangles[i];
@@ -862,8 +1724,8 @@ static void draw_mesh_instance(RenderState* renderer, Dimension* dim, const Came
         const Vector3 n = safe_norm(Vector3CrossProduct(b - a, c - a));
         Color shaded = mesh->lit ? color_scaled(base, face_light(dim, view, origin, n)) : base;
         shaded = mix_color(shaded, dim->fog_color, ff);
-        DrawTriangle3D(a, b, c, shaded);
-        if (scene_triangles) {
+        out->triangles.push_back({a, b, c, shaded});
+        if (collect_mesh_scene_triangles) {
             Vector2 screen_min{};
             Vector2 screen_max{};
             const SceneTriangleProjection projection = clipped_triangle_screen_bounds(
@@ -875,6 +1737,69 @@ static void draw_mesh_instance(RenderState* renderer, Dimension* dim, const Came
                 projection_matrix,
                 renderer->native_w,
                 renderer->native_h,
+                near_plane,
+                &screen_min,
+                &screen_max);
+            push_prepared_scene_triangle(&out->scene_triangles, a, b, c, projection, screen_min, screen_max);
+        }
+    }
+
+    if (!mesh->draw_edges) return;
+    const float edge_alpha = mesh_edge_alpha(dim, mesh_dist_chunks);
+    if (edge_alpha <= 0.0f) return;
+
+    const Color edge_color = color_with_alpha_factor(mix_color(BLACK, dim->fog_color, ff), edge_alpha);
+    for (u32 i = 0; i < geometry->edge_count; ++i) {
+        const Edge e = geometry->edges[i];
+        push_world_screen_edge(camera, view_matrix, projection_matrix, renderer->native_w, renderer->native_h, near_plane, &out->edge_list, transformed[e.a], transformed[e.b], edge_color, e.thickness_px);
+    }
+}
+
+static void draw_mesh_instance_direct(RenderState* renderer, Dimension* dim, const CameraView& view, const Camera3D& camera, const Matrix& view_matrix, const Matrix& projection_matrix, float near_plane, ScreenEdgeList* edge_list, SceneTriangleList* scene_triangles, const MeshInstance* mesh, float chunk_dist) {
+    if (!mesh || !mesh->visible) return;
+    u32 geometry_id = mesh->geometry;
+    const MeshGeometry* geometry = arena_get(&dim->geometries, geometry_id);
+    if (!geometry) return;
+    if (chunk_dist > static_cast<float>(dim->quality_render_radius_chunks)) {
+        if (!id_valid(geometry->lod_geometry)) return;
+        geometry = arena_get(&dim->geometries, geometry->lod_geometry);
+        if (!geometry) return;
+    }
+
+    Vector3 transformed[max_vertices_per_geometry]{};
+    const Vector3 origin = world_delta_meters(mesh->origin, view.anchor, dim->chunk_size_m);
+    const float mesh_dist_chunks = safe_len(origin) / fmaxf(dim->chunk_size_m, 0.001f);
+    const Matrix basis = matrix_no_translation(mesh->se3);
+    for (u32 i = 0; i < geometry->vertex_count; ++i) {
+        transformed[i] = Vector3Transform(geometry->vertices[i], basis) + origin;
+    }
+
+    Color base = resolve_mesh_color(mesh);
+    const float ff = fog_factor(dim, chunk_dist);
+    const bool collect_mesh_scene_triangles = scene_triangles && mesh_edges_in_render_radius(dim, mesh_dist_chunks);
+
+    for (u32 i = 0; i < geometry->triangle_count; ++i) {
+        const Triangle tri = geometry->triangles[i];
+        const Vector3 a = transformed[tri.a];
+        const Vector3 b = transformed[tri.b];
+        const Vector3 c = transformed[tri.c];
+        const Vector3 n = safe_norm(Vector3CrossProduct(b - a, c - a));
+        Color shaded = mesh->lit ? color_scaled(base, face_light(dim, view, origin, n)) : base;
+        shaded = mix_color(shaded, dim->fog_color, ff);
+        DrawTriangle3D(a, b, c, shaded);
+        if (collect_mesh_scene_triangles) {
+            Vector2 screen_min{};
+            Vector2 screen_max{};
+            const SceneTriangleProjection projection = clipped_triangle_screen_bounds(
+                a,
+                b,
+                c,
+                camera,
+                view_matrix,
+                projection_matrix,
+                renderer->native_w,
+                renderer->native_h,
+                near_plane,
                 &screen_min,
                 &screen_max);
             push_scene_triangle(scene_triangles, a, b, c, projection, screen_min, screen_max);
@@ -882,12 +1807,93 @@ static void draw_mesh_instance(RenderState* renderer, Dimension* dim, const Came
     }
 
     if (!mesh->draw_edges) return;
+    const float edge_alpha = mesh_edge_alpha(dim, mesh_dist_chunks);
+    if (edge_alpha <= 0.0f) return;
 
-    const Color edge_color = mix_color(BLACK, dim->fog_color, ff);
+    const Color edge_color = color_with_alpha_factor(mix_color(BLACK, dim->fog_color, ff), edge_alpha);
     for (u32 i = 0; i < geometry->edge_count; ++i) {
         const Edge e = geometry->edges[i];
-        push_world_screen_edge(renderer, camera, view_matrix, projection_matrix, edge_list, transformed[e.a], transformed[e.b], edge_color, e.thickness_px);
+        push_world_screen_edge(camera, view_matrix, projection_matrix, renderer->native_w, renderer->native_h, near_plane, edge_list, transformed[e.a], transformed[e.b], edge_color, e.thickness_px);
     }
+}
+
+static void draw_prepared_triangles(const std::vector<PreparedTriangle>& triangles) {
+    for (const PreparedTriangle& tri : triangles) {
+        DrawTriangle3D(tri.a, tri.b, tri.c, tri.color);
+    }
+}
+
+static void draw_prepared_triangles(const PreparedRenderBatch& batch) {
+    for (const PreparedRenderBuffer& buffer : batch.buffers) {
+        draw_prepared_triangles(buffer.triangles);
+    }
+}
+
+static void append_screen_edges(ScreenEdgeList* dst, const ScreenEdgeList& src) {
+    if (!dst) return;
+    for (const ScreenEdge& edge : src.edges) {
+        if (dst->count >= dst->max_count) return;
+        dst->edges.push_back(edge);
+        dst->count = static_cast<u32>(dst->edges.size());
+    }
+}
+
+static void prepare_mesh_job_range(RenderState* renderer, Dimension* dim, const CameraView& view, const Camera3D& camera, const Matrix& view_matrix, const Matrix& projection_matrix, float near_plane, bool collect_scene_triangles, const std::vector<MeshPrepJob>& jobs, size_t begin, size_t end, PreparedRenderBuffer* out) {
+    if (!out || begin >= end) return;
+
+    out->triangles.reserve((end - begin) * 12);
+    out->edge_list.max_count = max_render_edges;
+    for (size_t i = begin; i < end; ++i) {
+        const MeshPrepJob& job = jobs[i];
+        prepare_mesh_instance(renderer, dim, view, camera, view_matrix, projection_matrix, near_plane, out, collect_scene_triangles, job.mesh, job.chunk_dist);
+    }
+}
+
+static PreparedRenderBatch prepare_mesh_jobs_parallel(RenderState* renderer, Dimension* dim, const CameraView& view, const Camera3D& camera, const Matrix& view_matrix, const Matrix& projection_matrix, float near_plane, bool collect_scene_triangles, u32 edge_cap, const std::vector<MeshPrepJob>& jobs) {
+    PreparedRenderBatch batch{};
+    batch.edge_list.max_count = edge_cap;
+    if (jobs.empty()) return batch;
+
+    const unsigned int hw = std::max(1u, std::thread::hardware_concurrency());
+    const u32 desired_workers = jobs.size() < parallel_mesh_prep_min_jobs ? 1u : static_cast<u32>(std::min<size_t>(16, (jobs.size() + 255) / 256));
+    const u32 worker_count = std::max(1u, std::min<u32>(std::min<u32>(hw, desired_workers), static_cast<u32>(jobs.size())));
+
+    if (worker_count <= 1) {
+        batch.buffers.resize(1);
+        prepare_mesh_job_range(renderer, dim, view, camera, view_matrix, projection_matrix, near_plane, collect_scene_triangles, jobs, 0, jobs.size(), &batch.buffers[0]);
+        append_screen_edges(&batch.edge_list, batch.buffers[0].edge_list);
+        return batch;
+    }
+
+    batch.buffers.resize(worker_count);
+    std::vector<std::thread> workers;
+    workers.reserve(worker_count);
+
+    const size_t jobs_per_worker = (jobs.size() + static_cast<size_t>(worker_count) - 1) / static_cast<size_t>(worker_count);
+    for (u32 worker = 0; worker < worker_count; ++worker) {
+        const size_t begin = static_cast<size_t>(worker) * jobs_per_worker;
+        const size_t end = std::min(jobs.size(), begin + jobs_per_worker);
+        if (begin >= end) break;
+        workers.emplace_back([&, begin, end, worker]() {
+            prepare_mesh_job_range(renderer, dim, view, camera, view_matrix, projection_matrix, near_plane, collect_scene_triangles, jobs, begin, end, &batch.buffers[worker]);
+        });
+    }
+
+    for (std::thread& worker : workers) {
+        if (worker.joinable()) worker.join();
+    }
+
+    size_t edge_count = 0;
+    for (const PreparedRenderBuffer& buffer : batch.buffers) {
+        edge_count += buffer.edge_list.edges.size();
+    }
+
+    batch.edge_list.edges.reserve(std::min<size_t>(edge_cap, edge_count));
+    for (const PreparedRenderBuffer& buffer : batch.buffers) {
+        append_screen_edges(&batch.edge_list, buffer.edge_list);
+    }
+
+    return batch;
 }
 
 static Texture2D sprite_texture(RenderState* renderer, u32 texture_id) {
@@ -978,7 +1984,7 @@ static void draw_sprites(RenderState* renderer, Dimension* dim, const CameraView
     }
 }
 
-static void push_player_ring_edges(RenderState* renderer, const Camera3D& camera, const Matrix& view_matrix, const Matrix& projection_matrix, ScreenEdgeList* edge_list, Vector3 center, float radius, Color color) {
+static void push_player_ring_edges(RenderState* renderer, const Camera3D& camera, const Matrix& view_matrix, const Matrix& projection_matrix, float near_plane, ScreenEdgeList* edge_list, Vector3 center, float radius, Color color) {
     constexpr u32 segments = 32;
     constexpr u8 thickness_px = 2;
     for (u32 i = 0; i < segments; ++i) {
@@ -986,7 +1992,7 @@ static void push_player_ring_edges(RenderState* renderer, const Camera3D& camera
         const float a1 = static_cast<float>(i + 1) * 2.0f * PI / static_cast<float>(segments);
         const Vector3 p0 = center + Vector3{std::cos(a0) * radius, 0.0f, std::sin(a0) * radius};
         const Vector3 p1 = center + Vector3{std::cos(a1) * radius, 0.0f, std::sin(a1) * radius};
-        push_world_screen_edge(renderer, camera, view_matrix, projection_matrix, edge_list, p0, p1, color, thickness_px);
+        push_world_screen_edge(camera, view_matrix, projection_matrix, renderer->native_w, renderer->native_h, near_plane, edge_list, p0, p1, color, thickness_px);
     }
 }
 
@@ -1087,7 +2093,7 @@ static void draw_name_tag_text(RenderState* renderer, const PlayerNameTag& tag) 
     draw_engine_text(renderer, tag.name, pos, text_size, WHITE);
 }
 
-static void draw_players(RenderState* renderer, Dimension* dim, const CameraView& view, u32 local_player_id, const Camera3D& camera, const Matrix& view_matrix, const Matrix& projection_matrix, ScreenEdgeList* edge_list, SceneTriangleList* scene_triangles, PlayerNameTag* hovered_tag) {
+static void draw_players(RenderState* renderer, Dimension* dim, const CameraView& view, u32 local_player_id, const Camera3D& camera, const Matrix& view_matrix, const Matrix& projection_matrix, float near_plane, ScreenEdgeList* edge_list, SceneTriangleList* scene_triangles, PlayerNameTag* hovered_tag) {
     const Ray hover_ray = {camera.position, safe_norm(camera.target - camera.position, {0.0f, 0.0f, -1.0f})};
     float closest_hover_t = std::numeric_limits<float>::max();
 
@@ -1105,8 +2111,8 @@ static void draw_players(RenderState* renderer, Dimension* dim, const CameraView
 
         DrawCylinderEx(bottom, top, radius, radius, 32, player->color);
         push_player_cylinder_triangles(scene_triangles, bottom, top, radius);
-        push_player_ring_edges(renderer, camera, view_matrix, projection_matrix, edge_list, bottom, radius, BLACK);
-        push_player_ring_edges(renderer, camera, view_matrix, projection_matrix, edge_list, top, radius, BLACK);
+        push_player_ring_edges(renderer, camera, view_matrix, projection_matrix, near_plane, edge_list, bottom, radius, BLACK);
+        push_player_ring_edges(renderer, camera, view_matrix, projection_matrix, near_plane, edge_list, top, radius, BLACK);
 
         float hover_t = 0.0f;
         if (ray_hits_vertical_cylinder(hover_ray, bottom, top, radius, &hover_t) && hover_t < closest_hover_t) {
@@ -1202,24 +2208,78 @@ void renderer_render_dimension_to_target(RenderState* renderer, Dimension* dim, 
         rlGetCullDistanceNear(),
         rlGetCullDistanceFar()
     );
+    const float near_plane = static_cast<float>(rlGetCullDistanceNear());
+    const u32 edge_cap = max_render_edges;
+    const bool use_compute_depth_edges =
+        renderer->depth_test_edges &&
+        renderer->gpu_depth_edges &&
+        renderer->edge_filter_compute_ready &&
+        renderer->edge_scene_depth_texture_ready &&
+        renderer->edge_depth_texture_ready;
+
+    std::vector<VisibleChunkRef> visible_chunks;
+    visible_chunks.reserve(dim->chunks.count);
+    std::vector<MeshPrepJob> mesh_jobs;
+    mesh_jobs.reserve(dim->meshes.count);
+    for (u32 chunk_slot = 0; chunk_slot < dim->chunks.count; ++chunk_slot) {
+        const Chunk* chunk = &dim->chunks.data[chunk_slot];
+        float chunk_dist = 0.0f;
+        if (!chunk_visible(dim, view.anchor.chunk, chunk->coord, &chunk_dist)) continue;
+        visible_chunks.push_back({chunk, chunk_dist});
+        for (u32 i = 0; i < chunk->mesh_count; ++i) {
+            mesh_jobs.push_back({arena_get(&dim->meshes, chunk->meshes[i]), chunk_dist});
+        }
+    }
+
+    const bool collect_scene_triangles = renderer->depth_test_edges;
+    const bool use_parallel_mesh_prep = mesh_jobs.size() >= parallel_mesh_prep_min_jobs;
+    PreparedRenderBatch prepared{};
+    if (use_parallel_mesh_prep) {
+        prepared = prepare_mesh_jobs_parallel(
+            renderer,
+            dim,
+            view,
+            camera,
+            view_matrix,
+            projection_matrix,
+            near_plane,
+            collect_scene_triangles,
+            edge_cap,
+            mesh_jobs);
+    }
 
     BeginTextureMode(renderer->target);
     ClearBackground(dim->sky_top);
     DrawRectangleGradientV(0, 0, renderer->native_w, renderer->native_h, dim->sky_top, dim->sky_bottom);
     BeginMode3D(camera);
 
-    ScreenEdgeList edge_list{};
+    ScreenEdgeList edge_list = use_parallel_mesh_prep ? std::move(prepared.edge_list) : ScreenEdgeList{};
+    edge_list.max_count = edge_cap;
+    if (!use_parallel_mesh_prep) edge_list.edges.reserve(edge_cap);
     SceneTriangleList scene_triangles{};
     scene_triangles.screen_w = renderer->native_w;
     scene_triangles.screen_h = renderer->native_h;
-    scene_triangles.triangles.reserve(2048);
-    for (u32 chunk_slot = 0; chunk_slot < dim->chunks.count; ++chunk_slot) {
-        const Chunk* chunk = &dim->chunks.data[chunk_slot];
-        float chunk_dist = 0.0f;
-        if (!chunk_visible(dim, view.anchor.chunk, chunk->coord, &chunk_dist)) continue;
-
-        for (u32 i = 0; i < chunk->mesh_count; ++i) {
-            draw_mesh_instance(renderer, dim, view, camera, view_matrix, projection_matrix, &edge_list, &scene_triangles, arena_get(&dim->meshes, chunk->meshes[i]), chunk_dist);
+    if (use_parallel_mesh_prep) {
+        size_t prepared_scene_triangle_count = 0;
+        for (const PreparedRenderBuffer& buffer : prepared.buffers) {
+            prepared_scene_triangle_count += buffer.scene_triangles.size();
+        }
+        scene_triangles.triangles.reserve(prepared_scene_triangle_count);
+        for (const PreparedRenderBuffer& buffer : prepared.buffers) {
+            for (const SceneTriangle& tri : buffer.scene_triangles) {
+                append_scene_triangle(&scene_triangles, tri);
+            }
+        }
+        draw_prepared_triangles(prepared);
+    } else {
+        scene_triangles.triangles.reserve(2048);
+        SceneTriangleList* scene_triangle_target = collect_scene_triangles ? &scene_triangles : nullptr;
+        for (const VisibleChunkRef& visible : visible_chunks) {
+            const Chunk* chunk = visible.chunk;
+            if (!chunk) continue;
+            for (u32 i = 0; i < chunk->mesh_count; ++i) {
+                draw_mesh_instance_direct(renderer, dim, view, camera, view_matrix, projection_matrix, near_plane, &edge_list, scene_triangle_target, arena_get(&dim->meshes, chunk->meshes[i]), visible.chunk_dist);
+            }
         }
     }
     renderer->debug_edge_count = edge_list.count;
@@ -1228,30 +2288,47 @@ void renderer_render_dimension_to_target(RenderState* renderer, Dimension* dim, 
 
     SpriteDepthOcclusion sprite_occlusion{};
     if (renderer->depth_test_edges) {
-        sprite_occlusion.scene = read_current_depth_buffer(renderer->native_w, renderer->native_h);
+        if (use_compute_depth_edges) {
+            copy_current_depth_to_texture(renderer, renderer->edge_scene_depth_texture, renderer->edge_scene_depth_texture_ready);
+        } else {
+            sprite_occlusion.scene = read_current_depth_buffer(renderer->native_w, renderer->native_h);
+        }
     }
 
-    for (u32 chunk_slot = 0; chunk_slot < dim->chunks.count; ++chunk_slot) {
-        const Chunk* chunk = &dim->chunks.data[chunk_slot];
-        float chunk_dist = 0.0f;
-        if (!chunk_visible(dim, view.anchor.chunk, chunk->coord, &chunk_dist)) continue;
-
-        draw_sprites(renderer, dim, view, camera, chunk);
+    for (const VisibleChunkRef& visible : visible_chunks) {
+        draw_sprites(renderer, dim, view, camera, visible.chunk);
     }
 
     if (renderer->depth_test_edges) {
-        sprite_occlusion.after_sprites = read_current_depth_buffer(renderer->native_w, renderer->native_h);
+        if (use_compute_depth_edges) {
+            copy_current_depth_to_texture(renderer, renderer->edge_depth_texture, renderer->edge_depth_texture_ready);
+        } else {
+            sprite_occlusion.after_sprites = read_current_depth_buffer(renderer->native_w, renderer->native_h);
+        }
     }
 
     PlayerNameTag hovered_tag{};
-    draw_players(renderer, dim, view, local_player_id, camera, view_matrix, projection_matrix, &edge_list, nullptr, &hovered_tag);
+    draw_players(renderer, dim, view, local_player_id, camera, view_matrix, projection_matrix, near_plane, &edge_list, nullptr, &hovered_tag);
     draw_player_aim_rays(renderer, dim, view, local_player_id, camera);
     draw_physics(renderer, dim, view);
 
     EndMode3D();
 
-    if (renderer->depth_test_edges) draw_depth_cut_screen_edges(renderer, &edge_list, sprite_occlusion, scene_triangles, camera.position);
-    else draw_flat_screen_edges(&edge_list);
+    if (renderer->depth_test_edges) {
+        ScreenEdgeList filtered_edges{};
+        filtered_edges.max_count = edge_list.max_count;
+        bool filtered = false;
+        if (use_compute_depth_edges) {
+            filtered = filter_depth_cut_screen_edges_compute(renderer, &edge_list, scene_triangles, camera.position, &filtered_edges);
+        }
+        if (!filtered) {
+            filter_depth_cut_screen_edges(renderer, &edge_list, sprite_occlusion, scene_triangles, camera.position, &filtered_edges);
+        }
+        renderer->debug_edge_count = filtered_edges.count;
+        draw_flat_screen_edges(&filtered_edges);
+    } else {
+        draw_flat_screen_edges(&edge_list);
+    }
     draw_name_tag_text(renderer, hovered_tag);
     draw_crosshair(renderer);
 

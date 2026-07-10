@@ -10,7 +10,7 @@ namespace {
 constexpr float menu_base_w = 900.0f;
 constexpr float menu_base_h = 640.0f;
 constexpr float pause_base_w = 760.0f;
-constexpr float pause_base_h = 560.0f;
+constexpr float pause_base_h = 640.0f;
 
 struct MenuLayout {
     float scale = 1.0f;
@@ -37,6 +37,8 @@ struct PauseLayout {
     Rectangle fov_slider{};
     Rectangle scale_slider{};
     Rectangle render_radius_slider{};
+    Rectangle fullscreen_button{};
+    Rectangle fps_counter_button{};
     Rectangle continue_button{};
     Rectangle first_menu_button{};
 };
@@ -97,11 +99,13 @@ static PauseLayout make_pause_layout() {
         (screen_w - pause_base_w * layout.scale) * 0.5f,
         (screen_h - pause_base_h * layout.scale) * 0.5f
     };
-    layout.fov_slider = scaled_rect(layout.origin, layout.scale, {150.0f, 115.0f, 460.0f, 8.0f});
-    layout.scale_slider = scaled_rect(layout.origin, layout.scale, {150.0f, 215.0f, 460.0f, 8.0f});
-    layout.render_radius_slider = scaled_rect(layout.origin, layout.scale, {150.0f, 315.0f, 460.0f, 8.0f});
-    layout.continue_button = scaled_rect(layout.origin, layout.scale, {150.0f, 425.0f, 205.0f, 56.0f});
-    layout.first_menu_button = scaled_rect(layout.origin, layout.scale, {405.0f, 425.0f, 205.0f, 56.0f});
+    layout.fov_slider = scaled_rect(layout.origin, layout.scale, {150.0f, 105.0f, 460.0f, 8.0f});
+    layout.scale_slider = scaled_rect(layout.origin, layout.scale, {150.0f, 200.0f, 460.0f, 8.0f});
+    layout.render_radius_slider = scaled_rect(layout.origin, layout.scale, {150.0f, 295.0f, 460.0f, 8.0f});
+    layout.fullscreen_button = scaled_rect(layout.origin, layout.scale, {150.0f, 380.0f, 205.0f, 56.0f});
+    layout.fps_counter_button = scaled_rect(layout.origin, layout.scale, {405.0f, 380.0f, 205.0f, 56.0f});
+    layout.continue_button = scaled_rect(layout.origin, layout.scale, {150.0f, 490.0f, 205.0f, 56.0f});
+    layout.first_menu_button = scaled_rect(layout.origin, layout.scale, {405.0f, 490.0f, 205.0f, 56.0f});
     return layout;
 }
 
@@ -148,6 +152,17 @@ static void draw_button(RenderState* renderer, Rectangle rect, const char* label
     DrawRectangleRounded(rect, 0.18f, 10, fill);
     DrawRectangleRoundedLinesEx(rect, 0.18f, 10, 3.0f, WHITE);
     draw_centered_text(renderer, label, rect, rect.height * 0.52f, WHITE);
+}
+
+static void draw_toggle_button(RenderState* renderer, Rectangle rect, const char* label, bool enabled, bool hot) {
+    const Color fill = hot ? Color{18, 22, 27, 255} : BLACK;
+    const Color border = enabled ? Color{103, 218, 151, 255} : WHITE;
+    DrawRectangleRounded(rect, 0.18f, 10, fill);
+    DrawRectangleRoundedLinesEx(rect, 0.18f, 10, 3.0f, border);
+
+    char text[64]{};
+    std::snprintf(text, sizeof(text), "%s %s", label, enabled ? "on" : "off");
+    draw_centered_text(renderer, text, rect, rect.height * 0.42f, WHITE);
 }
 
 static void draw_arrow_button(Rectangle rect, bool open, bool hot) {
@@ -475,6 +490,8 @@ static void draw_pause_controls(const PauseScreen& pause) {
         Color{226, 183, 91, 255});
 
     const Vector2 mouse = GetMousePosition();
+    draw_toggle_button(pause.renderer, layout.fullscreen_button, "fullscreen", pause.fullscreen, point_in_rect(mouse, layout.fullscreen_button));
+    draw_toggle_button(pause.renderer, layout.fps_counter_button, "fps", pause.show_fps, point_in_rect(mouse, layout.fps_counter_button));
     draw_button(pause.renderer, layout.continue_button, "continue", point_in_rect(mouse, layout.continue_button));
     draw_button(pause.renderer, layout.first_menu_button, "leave", point_in_rect(mouse, layout.first_menu_button));
 }
@@ -495,6 +512,7 @@ void demo_draw_pause_overlay_screen(const PauseScreen& pause) {
     renderer_draw_target_to_screen(pause.renderer);
     DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Color{0, 0, 0, 148});
     draw_pause_controls(pause);
+    if (pause.show_fps) DrawFPS(10, 10);
     EndDrawing();
 }
 
@@ -503,6 +521,8 @@ PauseHit demo_pause_hit_test(Vector2 mouse) {
     if (point_in_rect(mouse, slider_hit_rect(layout.fov_slider))) return {pause_control_fov};
     if (point_in_rect(mouse, slider_hit_rect(layout.scale_slider))) return {pause_control_scale};
     if (point_in_rect(mouse, slider_hit_rect(layout.render_radius_slider))) return {pause_control_render_radius};
+    if (point_in_rect(mouse, layout.fullscreen_button)) return {pause_control_fullscreen};
+    if (point_in_rect(mouse, layout.fps_counter_button)) return {pause_control_fps_counter};
     if (point_in_rect(mouse, layout.continue_button)) return {pause_control_continue};
     if (point_in_rect(mouse, layout.first_menu_button)) return {pause_control_first_menu};
     return {};

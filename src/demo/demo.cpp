@@ -89,6 +89,7 @@ static void capture_frame_input(DemoApp* app) {
     input.plus_pressed = frame_key_pressed(app, KEY_EQUAL, queued_keys) || frame_key_pressed(app, KEY_KP_ADD, queued_keys);
     input.minus_pressed = frame_key_pressed(app, KEY_MINUS, queued_keys) || frame_key_pressed(app, KEY_KP_SUBTRACT, queued_keys);
     input.f3_pressed = frame_key_pressed(app, KEY_F3, queued_keys);
+    input.f11_pressed = frame_key_pressed(app, KEY_F11, queued_keys);
     input.r_pressed = frame_key_pressed(app, KEY_R, queued_keys);
     input.c_pressed = frame_key_pressed(app, KEY_C, queued_keys);
     input.o_pressed = frame_key_pressed(app, KEY_O, queued_keys);
@@ -99,7 +100,7 @@ static void capture_frame_input(DemoApp* app) {
 
     const int tracked_keys[] = {
         KEY_TAB, KEY_BACKSPACE, KEY_ESCAPE, KEY_ENTER, KEY_EQUAL, KEY_KP_ADD,
-        KEY_MINUS, KEY_KP_SUBTRACT, KEY_F3, KEY_R, KEY_C, KEY_O, KEY_SPACE
+        KEY_MINUS, KEY_KP_SUBTRACT, KEY_F3, KEY_F11, KEY_R, KEY_C, KEY_O, KEY_SPACE
     };
     for (int key : tracked_keys) update_previous_key(app, key);
 }
@@ -135,6 +136,46 @@ static void copy_world_name(char* dst, size_t cap, const char* src) {
 
 static void mark_profile_dirty(DemoApp* app) {
     app->profile_dirty = true;
+}
+
+static bool parse_profile_bool(const char* value, bool fallback) {
+    if (!value) return fallback;
+    if (std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 ||
+        std::strcmp(value, "on") == 0 || std::strcmp(value, "yes") == 0) {
+        return true;
+    }
+    if (std::strcmp(value, "0") == 0 || std::strcmp(value, "false") == 0 ||
+        std::strcmp(value, "off") == 0 || std::strcmp(value, "no") == 0) {
+        return false;
+    }
+    return std::atoi(value) != 0;
+}
+
+static bool visible_window_ready() {
+    return IsWindowReady() && !IsWindowState(FLAG_WINDOW_HIDDEN);
+}
+
+static void set_fullscreen_enabled(DemoApp* app, bool enabled, bool persist) {
+    if (visible_window_ready() && IsWindowFullscreen() != enabled) {
+        ToggleFullscreen();
+    }
+
+    const bool stored = visible_window_ready() ? IsWindowFullscreen() : enabled;
+    if (app->profile.fullscreen != stored) {
+        app->profile.fullscreen = stored;
+        if (persist) mark_profile_dirty(app);
+    }
+}
+
+static void toggle_fullscreen_setting(DemoApp* app) {
+    const bool enabled = visible_window_ready() ? !IsWindowFullscreen() : !app->profile.fullscreen;
+    set_fullscreen_enabled(app, enabled, true);
+}
+
+static void set_fps_counter_enabled(DemoApp* app, bool enabled, bool persist) {
+    if (app->profile.show_fps == enabled) return;
+    app->profile.show_fps = enabled;
+    if (persist) mark_profile_dirty(app);
 }
 
 static void set_dimension_render_radius(DemoApp* app, Dimension* dim, int radius, bool persist) {
@@ -381,6 +422,10 @@ static void load_profile(DemoApp* app) {
         } else if (std::strcmp(cmd, "render_radius") == 0) {
             const char* value = std::strtok(nullptr, " \t\r\n");
             if (value) app->profile.render_radius_chunks = clamped_render_radius(std::atoi(value));
+        } else if (std::strcmp(cmd, "fullscreen") == 0) {
+            app->profile.fullscreen = parse_profile_bool(std::strtok(nullptr, " \t\r\n"), app->profile.fullscreen);
+        } else if (std::strcmp(cmd, "fps_counter") == 0) {
+            app->profile.show_fps = parse_profile_bool(std::strtok(nullptr, " \t\r\n"), app->profile.show_fps);
         } else if (std::strcmp(cmd, "begin") == 0) {
             char name[32]{};
             decode_text_token(std::strtok(nullptr, " \t\r\n"), name, sizeof(name));
@@ -447,6 +492,9 @@ static void save_profile(DemoApp* app) {
     app->profile.player_color = app->player_color;
     app->profile.fov = static_cast<int>(clampf(floorf(app->renderer.fov + 0.5f), 60.0f, 120.0f));
     app->profile.scale_power = static_cast<int>(clampf(static_cast<float>(app->renderer.scale_power), 0.0f, 4.0f));
+    if (visible_window_ready()) {
+        app->profile.fullscreen = IsWindowFullscreen();
+    }
     if (app->profile.render_radius_chunks > 0) {
         app->profile.render_radius_chunks = clamped_render_radius(app->profile.render_radius_chunks);
     }
@@ -468,6 +516,8 @@ static void save_profile(DemoApp* app) {
         static_cast<unsigned>(app->profile.player_color.b));
     std::fprintf(file, "fov %d\n", app->profile.fov);
     std::fprintf(file, "scale %d\n", app->profile.scale_power);
+    std::fprintf(file, "fullscreen %d\n", app->profile.fullscreen ? 1 : 0);
+    std::fprintf(file, "fps_counter %d\n", app->profile.show_fps ? 1 : 0);
     if (app->profile.render_radius_chunks > 0) {
         std::fprintf(file, "render_radius %d\n", app->profile.render_radius_chunks);
     }
@@ -1232,6 +1282,7 @@ void demo_init(DemoApp* app) {
     InitWindow(1280, 720, "OL");
     SetExitKey(KEY_NULL);
     SetWindowState(FLAG_WINDOW_RESIZABLE);
+    set_fullscreen_enabled(app, app->profile.fullscreen, false);
     SetTargetFPS(120);
     renderer_init(&app->renderer);
     net_init(&app->net);
@@ -1967,7 +2018,11 @@ static void draw_game_scene(DemoApp* app, Dimension* dim, PlayerEntity* player, 
     if (allow_copy_view && app->frame_input.o_pressed) copy_current_view_to_clipboard(dim, view);
     renderer_ensure_target(&app->renderer);
     if (present_to_screen) {
-        renderer_draw_dimension(&app->renderer, dim, view, app->local_player_id);
+        renderer_render_dimension_to_target(&app->renderer, dim, view, app->local_player_id);
+        BeginDrawing();
+        renderer_draw_target_to_screen(&app->renderer);
+        if (app->profile.show_fps) DrawFPS(10, 10);
+        EndDrawing();
     } else {
         renderer_render_dimension_to_target(&app->renderer, dim, view, app->local_player_id);
     }
@@ -1979,7 +2034,9 @@ static void draw_pause(DemoApp* app, Dimension* dim, PlayerEntity* player) {
         &app->renderer,
         static_cast<int>(floorf(app->renderer.fov + 0.5f)),
         app->renderer.scale_power,
-        dim ? dim->render_radius_chunks : 6
+        dim ? dim->render_radius_chunks : 6,
+        visible_window_ready() ? IsWindowFullscreen() : app->profile.fullscreen,
+        app->profile.show_fps
     });
 }
 
@@ -2085,6 +2142,14 @@ static void update_pause_menu(DemoApp* app, Dimension* dim) {
         }
         if (hit.control == pause_control_first_menu) {
             exit_to_first_menu(app);
+            return;
+        }
+        if (hit.control == pause_control_fullscreen) {
+            toggle_fullscreen_setting(app);
+            return;
+        }
+        if (hit.control == pause_control_fps_counter) {
+            set_fps_counter_enabled(app, !app->profile.show_fps, true);
             return;
         }
         if (hit.control == pause_control_fov || hit.control == pause_control_scale || hit.control == pause_control_render_radius) {
@@ -2282,6 +2347,7 @@ static void update_game(DemoApp* app) {
 bool demo_update_and_draw(DemoApp* app) {
     if (WindowShouldClose()) return false;
     capture_frame_input(app);
+    if (app->frame_input.f11_pressed) toggle_fullscreen_setting(app);
     if (!app->in_game && app->frame_input.escape_pressed) return false;
     if (!app->in_game) {
         update_menu(app);
