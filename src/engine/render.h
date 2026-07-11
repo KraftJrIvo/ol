@@ -4,10 +4,16 @@
 
 #include "raylib.h"
 
+#include <vector>
+
 namespace ol {
 
 constexpr u32 render_texture_life = 1;
 constexpr u32 render_texture_cross = 2;
+constexpr u32 render_texture_grid = 3;
+constexpr u32 render_texture_grass = 4;
+constexpr u32 render_texture_stone = 5;
+constexpr u32 render_texture_roof = 6;
 
 struct CameraView {
     WorldPos anchor{};
@@ -16,11 +22,39 @@ struct CameraView {
     float pitch = 0.0f;
 };
 
+struct SpritePaintTextureCache {
+    u32 sprite_id = invalid_id;
+    u32 base_texture_id = invalid_id;
+    u64 paint_revision = 0;
+    Color tint = WHITE;
+    Texture2D texture{};
+};
+
+struct MeshPaintSurfaceCache {
+    u32 mesh_id = invalid_id;
+    u32 geometry_id = invalid_id;
+    u64 paint_hash = 0;
+    Vector3 normal = {0.0f, 1.0f, 0.0f};
+    Vector3 tangent = {1.0f, 0.0f, 0.0f};
+    Vector3 bitangent = {0.0f, 0.0f, 1.0f};
+    float plane = 0.0f;
+    i32 grid_min_u = 0;
+    i32 grid_min_v = 0;
+    i32 width = 0;
+    i32 height = 0;
+    Texture2D texture{};
+    std::vector<u32> triangles{};
+};
+
 struct RenderState {
     RenderTexture2D target{};
     Texture2D white_texture{};
     Texture2D life_texture{};
     Texture2D cross_texture{};
+    Texture2D grid_texture{};
+    Texture2D grass_texture{};
+    Texture2D stone_texture{};
+    Texture2D roof_texture{};
     Texture2D edge_depth_texture{};
     Texture2D edge_scene_depth_texture{};
     Shader sprite_alpha_shader{};
@@ -30,6 +64,7 @@ struct RenderState {
     bool white_ready = false;
     bool life_ready = false;
     bool cross_ready = false;
+    bool world_textures_ready = false;
     bool edge_depth_texture_ready = false;
     bool edge_scene_depth_texture_ready = false;
     bool sprite_alpha_shader_ready = false;
@@ -46,6 +81,12 @@ struct RenderState {
     bool depth_test_edges = true;
     bool gpu_depth_edges = true;
     bool brute_force_edge_occlusion = false;
+    std::vector<SpritePaintTextureCache> sprite_paint_textures{};
+    std::vector<MeshPaintSurfaceCache> mesh_paint_surfaces{};
+    u64 mesh_paint_revision = 0;
+    u64 mesh_paint_topology_hash = 0;
+    std::vector<u8> life_alpha{};
+    std::vector<u8> cross_alpha{};
     float edge_depth_bias = 0.00001f;
     int edge_depth_texture_loc = -1;
     int edge_depth_bias_loc = -1;

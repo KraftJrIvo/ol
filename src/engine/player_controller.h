@@ -18,6 +18,8 @@ constexpr float player_jump_hold_time_s = 0.18f;
 constexpr float player_ground_accel_mps2 = 60.0f;
 constexpr float player_ground_decel_mps2 = 70.0f;
 constexpr float player_air_accel_mps2 = 35.0f;
+constexpr float player_air_gain_accel_mps2 = 14.0f;
+constexpr float player_air_control_speed_mps = 4.25f;
 constexpr float player_eye_transition_mps = 5.0f;
 constexpr float player_step_up_m = 0.35f;
 

@@ -24,6 +24,7 @@ constexpr u32 max_sprites = 1024;
 constexpr u32 max_lights = 512;
 constexpr u32 max_material_layers = 8;
 constexpr u32 max_players = 16;
+constexpr u32 max_saved_painted_pixels = 262144;
 
 constexpr u32 max_vertices_per_geometry = 96;
 constexpr u32 max_triangles_per_geometry = 160;

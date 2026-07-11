@@ -21,7 +21,8 @@ enum NetPacketType : u32 {
     net_packet_join = 3,
     net_packet_welcome = 4,
     net_packet_player_state = 5,
-    net_packet_restore_player = 6
+    net_packet_restore_player = 6,
+    net_packet_paint_pixel = 7
 };
 
 struct NetPlayerState {
@@ -67,6 +68,27 @@ struct NetPlayerStatePacket {
     NetPlayerState player{};
 };
 
+struct NetPaintPixel {
+    ChunkCoord chunk{};
+    Vector3 local{};
+    Vector3 normal = {0.0f, 1.0f, 0.0f};
+    Vector3 tangent = {1.0f, 0.0f, 0.0f};
+    Color color = WHITE;
+    Vector2 quad_offset{};
+    Vector2 quad_half_size{};
+    u32 mesh_id = invalid_id;
+    u32 sprite_id = invalid_id;
+    i32 sprite_pixel_x = 0;
+    i32 sprite_pixel_y = 0;
+    float erase_radius_pixels = 0.0f;
+};
+
+struct NetPaintPixelPacket {
+    NetPacketType type = net_packet_paint_pixel;
+    u64 lobby_id = 0;
+    NetPaintPixel pixel{};
+};
+
 struct NetSession {
     NetMode mode = net_offline;
     bool steam_available = false;
@@ -90,6 +112,8 @@ struct NetSession {
     bool local_player_valid = false;
     NetPlayerState restore_player{};
     bool restore_player_valid = false;
+    u32 received_paint_count = 0;
+    std::array<NetPaintPixel, 64> received_paints{};
     char session_name[32] = "session";
     char world_name[32] = "playground";
     char status[128]{};
@@ -105,6 +129,8 @@ void net_copy_lobby_to_clipboard(NetSession* net);
 void net_set_local_player(NetSession* net, const NetPlayerState& player);
 void net_send_player_restore(NetSession* net, u64 peer_id, const NetPlayerState& player);
 bool net_take_player_restore(NetSession* net, NetPlayerState* out_player);
+void net_send_paint_pixel(NetSession* net, const NetPaintPixel& pixel);
+bool net_take_paint_pixel(NetSession* net, NetPaintPixel* out_pixel);
 void net_update(NetSession* net);
 
 } // namespace ol

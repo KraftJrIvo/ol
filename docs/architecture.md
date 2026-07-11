@@ -56,12 +56,50 @@ Contour selection is still explicit authoring data; the demo hand-authors combin
 contours for multi-box stairs and the tunnel instead of deriving arbitrary merged
 object outlines.
 
+## World Texture Pixels
+
+Each dimension owns a `pixels_per_meter` setting (16 by default). Mesh faces use
+centered planar world-space UVs, so one meter always spans that many texture texels
+and non-integer face dimensions expose symmetric partial edge texels. Generated
+mipmaps and anisotropic filtering reduce noise at oblique angles without changing
+the world-space texel scale. Sprite source pixels use the same setting to determine
+their size in meters.
+
+Painted mesh texels are assembled into filtered per-mesh, per-face texture layers.
+Each layer uses the same world-space texel grid as its authored texture and receives
+mipmaps and anisotropic filtering as one continuous image. The layer is rendered
+across the complete face with hardware depth bias, so close views do not expose a gap.
+Its polygons carry face-clipping bounds for partial edge texels and fade over the
+same chunk range as authored mesh edges. Sprite paint stores sprite-local texel
+coordinates and is baked into a cached per-sprite texture copy whenever those
+pixels change; sprites therefore have no paint decal geometry. This keeps paint stable when hills chunks
+unload and reload. Paint, replacement, and five-texel-diameter erase operations are
+sent reliably to current peers, and the lobby host replays the paint history plus an
+explicit completion marker when another player joins. Saved sessions serialize the
+surviving paint records and restore them when their world is generated again.
+
+Paint and erase rays are limited to 10 meters. Sprite raycasts consult a cached
+source-texture alpha mask and use the renderer's 0.5 alpha cutoff, allowing rays to
+continue through transparent sprite pixels to surfaces behind them.
+
+Painted sprite texture copies and mesh-face paint layers receive mipmaps and 8x
+anisotropic filtering. This keeps neighboring painted texels contiguous up close
+while filtering the complete painted pattern in oblique and distant views.
+Paint layers are indexed by their owning mesh and cached by content hash, so a
+stroke rebuilds only the touched mesh; streamed topology changes resolve stale mesh
+references once and preserve unaffected GPU textures.
+
 ## Physics Broadphase
 
 The first implementation uses a CPU spatial hash per active dimension. Point masses
 are inserted by cell, then collisions query neighboring cells instead of doing a full
 O(n^2) pass. This keeps the first server-authoritative physics path deterministic and
 easy to debug.
+
+Player ground support and obstacle clearance are evaluated at the actual contact
+point on the supporting surface. This keeps a broad floor valid when the player's
+cylinder touches furniture or a wall, while still rejecting a smaller step whose
+contact area is directly covered by another collider.
 
 Compute shader physics is viable later for particle-like batches or purely visual
 secondary simulation. It is not the right first authoritative physics path because

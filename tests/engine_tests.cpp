@@ -1084,6 +1084,147 @@ bool test_player_air_crouch_brings_legs_up() {
     return ok;
 }
 
+bool test_player_floor_support_remains_at_furniture_side() {
+    auto world = std::make_unique<ol::World>();
+    ol::world_init(world.get());
+    const ol::u32 dim_id = ol::world_add_dimension(world.get(), "floor_furniture_contact", 16.0f, 64.0f);
+    ol::Dimension* dim = ol::world_get_dimension(world.get(), dim_id);
+    add_test_box(dim, dim_id, {0.0f, -0.5f, 0.0f}, {8.0f, 1.0f, 8.0f});
+    add_test_box(dim, dim_id, {0.0f, 0.75f, 0.0f}, {2.0f, 1.5f, 2.0f});
+    const ol::u32 player_id = ol::dimension_add_player(dim, "tester", WHITE, test_pos(dim_id, {0.0f, 0.0f, 2.0f}, dim->chunk_size_m), true);
+    ol::PlayerEntity* player = ol::arena_get(&dim->players, player_id);
+    player->yaw = 0.0f;
+
+    ol::PlayerControllerInput input{};
+    input.move = {0.0f, 1.0f};
+    float min_y = feet_y(dim, player);
+    for (int i = 0; i < 120; ++i) {
+        ol::player_controller_step(dim, player, input, 1.0f / 60.0f);
+        min_y = fminf(min_y, feet_y(dim, player));
+    }
+
+    bool ok = expect_true(min_y > -0.05f, "Touching floor-mounted furniture does not invalidate the floor support");
+    ok = expect_true(feet_z(dim, player) > 1.25f && feet_z(dim, player) < 1.45f, "Floor-mounted furniture still blocks horizontal movement") && ok;
+    return ok;
+}
+
+bool test_player_stopped_jump_gains_air_control_speed() {
+    auto world = std::make_unique<ol::World>();
+    ol::world_init(world.get());
+    const ol::u32 dim_id = ol::world_add_dimension(world.get(), "air_from_rest", 16.0f, 64.0f);
+    ol::Dimension* dim = ol::world_get_dimension(world.get(), dim_id);
+    add_test_box(dim, dim_id, {0.0f, -0.5f, 0.0f}, {20.0f, 1.0f, 20.0f});
+    const ol::u32 player_id = ol::dimension_add_player(dim, "tester", WHITE,
+        test_pos(dim_id, {0.0f, 0.0f, 0.0f}, dim->chunk_size_m), true);
+    ol::PlayerEntity* player = ol::arena_get(&dim->players, player_id);
+
+    ol::PlayerControllerInput input{};
+    input.jump_pressed = true;
+    input.jump_held = true;
+    ol::player_controller_step(dim, player, input, 1.0f / 60.0f);
+    input.jump_pressed = false;
+    input.move = {0.0f, 1.0f};
+    input.sprint = true;
+    float max_air_speed = 0.0f;
+    for (int i = 0; i < 45; ++i) {
+        ol::player_controller_step(dim, player, input, 1.0f / 60.0f);
+        if (!player->on_ground) max_air_speed = fmaxf(max_air_speed, player_horizontal_speed(player));
+    }
+
+    bool ok = expect_true(max_air_speed > 3.5f, "A jump from rest can build useful ledge-reaching speed in the air");
+    ok = expect_true(max_air_speed <= ol::player_air_control_speed_mps + 0.05f,
+        "Air control from rest stays below walking speed even while sprint is held") && ok;
+    return ok;
+}
+
+bool test_world_texture_pixel_settings_and_paint() {
+    auto world = std::make_unique<ol::World>();
+    ol::world_init(world.get());
+    const ol::u32 dim_id = ol::world_add_dimension(world.get(), "texture", 16.0f, 64.0f);
+    ol::Dimension* dim = ol::world_get_dimension(world.get(), dim_id);
+    bool ok = expect_true(dim && near(dim->pixels_per_meter, 16.0f, 0.001f), "World textures default to 16 pixels per meter");
+    if (!dim) return false;
+
+    ol::PaintedPixel pixel{};
+    pixel.center = test_pos(dim_id, {1.03125f, 2.0f, 3.03125f}, dim->chunk_size_m);
+    pixel.color = RED;
+    ok = expect_true(ol::dimension_paint_pixel(dim, pixel), "A world texture pixel can be painted") && ok;
+    pixel.color = BLUE;
+    ok = expect_true(ol::dimension_paint_pixel(dim, pixel), "Painting the same pixel updates it") && ok;
+    ok = expect_true(dim->painted_pixels.size() == 1 && ColorIsEqual(dim->painted_pixels[0].color, BLUE),
+        "A painted texel is shared world state rather than duplicate geometry") && ok;
+    dim->painted_pixels.resize(8192);
+    pixel.center = test_pos(dim_id, {100.03125f, 2.0f, 3.03125f}, dim->chunk_size_m);
+    ok = expect_true(ol::dimension_paint_pixel(dim, pixel) && dim->painted_pixels.size() == 8193,
+        "Painting continues beyond the former hills-session limit") && ok;
+    return ok;
+}
+
+bool test_playground_clipboard_view_can_paint() {
+    auto app = std::make_unique<ol::DemoApp>();
+    std::snprintf(app->world_name, sizeof(app->world_name), "playground");
+    std::snprintf(app->session_name, sizeof(app->session_name), "paint-ray-test");
+    ol::demo_generate_world(app.get());
+    ol::Dimension* dim = ol::world_get_dimension(&app->world, app->dimension_id);
+    if (!dim) return expect_true(false, "Playground paint test generated a dimension");
+
+    ol::CameraView view{};
+    view.anchor = test_pos(app->dimension_id, {4.6638f, -0.05f, 2.9160f}, dim->chunk_size_m);
+    view.eye_height = 1.70f;
+    view.yaw = -141.593109f;
+    view.pitch = -0.792199f;
+    const bool painted = ol::demo_paint_at_view(app.get(), view, MAGENTA);
+    bool ok = expect_true(painted, "Reported playground clipboard view targets a paintable surface");
+    ok = expect_true(dim->painted_pixels.size() == 1, "Painting that view creates one world texel") && ok;
+
+    app->last_drag_pixel_valid = false;
+    ol::CameraView ramp_view{};
+    ramp_view.anchor = test_pos(app->dimension_id, {6.9881f, 0.0f, 2.4975f}, dim->chunk_size_m);
+    ramp_view.eye_height = 1.70f;
+    ramp_view.yaw = -154.016922f;
+    ramp_view.pitch = -0.899999f;
+    ok = expect_true(ol::demo_paint_at_view(app.get(), ramp_view, SKYBLUE),
+        "Reported lower-ramp clipboard view targets a paintable surface") && ok;
+
+    app->last_drag_pixel_valid = false;
+    ol::CameraView sprite_view{};
+    sprite_view.anchor = test_pos(app->dimension_id, {-3.0f, -0.1f, -6.0f}, dim->chunk_size_m);
+    sprite_view.eye_height = 1.70f;
+    sprite_view.yaw = 0.0f;
+    sprite_view.pitch = 0.0f;
+    const ol::u32 before_sprite = static_cast<ol::u32>(dim->painted_pixels.size());
+    ok = expect_true(ol::demo_paint_at_view(app.get(), sprite_view, RED), "Sprites accept painted texels") && ok;
+    bool found_sprite_paint = false;
+    for (ol::u32 i = before_sprite; i < dim->painted_pixels.size(); ++i) {
+        found_sprite_paint = found_sprite_paint || ol::id_valid(dim->painted_pixels[i].sprite_id);
+    }
+    ok = expect_true(dim->painted_pixels.size() == before_sprite + 1 && found_sprite_paint, "Sprite paint remains attached to its sprite") && ok;
+    app->last_drag_pixel_valid = false;
+    ok = expect_true(ol::demo_paint_at_view(app.get(), sprite_view, BLUE), "Another player color can replace a painted sprite texel") && ok;
+    ok = expect_true(dim->painted_pixels.size() == before_sprite + 1, "Painting over a texel replaces instead of stacking") && ok;
+    ok = expect_true(ol::demo_erase_at_view(app.get(), sprite_view), "The five-pixel RMB brush erases sprite paint") && ok;
+    ok = expect_true(dim->painted_pixels.size() == before_sprite, "Erase removes paint regardless of its author color") && ok;
+
+    app->last_drag_pixel_valid = false;
+    ol::CameraView stroke{};
+    stroke.anchor = test_pos(app->dimension_id, {0.0f, 0.0f, 8.0f}, dim->chunk_size_m);
+    stroke.eye_height = 1.70f;
+    stroke.pitch = -0.80f;
+    stroke.yaw = 0.0f;
+    ol::demo_paint_at_view(app.get(), stroke, MAGENTA);
+    const ol::u32 before_drag = static_cast<ol::u32>(dim->painted_pixels.size());
+    stroke.yaw = 0.12f;
+    ol::demo_paint_at_view(app.get(), stroke, MAGENTA);
+    ok = expect_true(dim->painted_pixels.size() > before_drag + 1, "Dragging fills a continuous run of intervening texels") && ok;
+    app->last_drag_pixel_valid = false;
+    ol::CameraView too_far{};
+    too_far.anchor = test_pos(app->dimension_id, {15.0f, 0.0f, 15.0f}, dim->chunk_size_m);
+    too_far.eye_height = 20.0f;
+    too_far.pitch = -PI * 0.5f;
+    ok = expect_true(!ol::demo_paint_at_view(app.get(), too_far, RED), "Paint rays stop at ten meters") && ok;
+    return ok;
+}
+
 bool test_player_cannot_be_squeezed_through_narrow_gap() {
     auto world = std::make_unique<ol::World>();
     ol::world_init(world.get());
@@ -1419,6 +1560,8 @@ bool test_hills_radius_32_streams_without_physics_overload() {
     return ok;
 }
 
+bool test_hills_house_block_contact_keeps_floor_support();
+
 bool run_physics_tests() {
     bool ok = true;
     auto run = [&](const char* name, bool (*fn)()) {
@@ -1427,13 +1570,17 @@ bool run_physics_tests() {
         ok = fn() && ok;
     };
     run("worldpos", test_worldpos);
+    run("world_texture_pixel_settings_and_paint", test_world_texture_pixel_settings_and_paint);
+    run("playground_clipboard_view_can_paint", test_playground_clipboard_view_can_paint);
     run("axis_lock_uncrouch_anchor", test_axis_lock_uncrouch_anchor);
     run("floor_collision_settles", test_floor_collision_settles);
     run("box_face_normals", test_box_face_normals);
     run("player_dimensions", test_player_dimensions);
     run("player_crouch_tunnel_clearance", test_player_crouch_tunnel_clearance);
     run("player_wall_contact_is_stable", test_player_wall_contact_is_stable);
+    run("player_floor_support_remains_at_furniture_side", test_player_floor_support_remains_at_furniture_side);
     run("player_airborne_sprint_speed_is_preserved", test_player_airborne_sprint_speed_is_preserved);
+    run("player_stopped_jump_gains_air_control_speed", test_player_stopped_jump_gains_air_control_speed);
     run("player_variable_jump_heights", test_player_variable_jump_heights);
     run("player_ground_movement_has_inertia", test_player_ground_movement_has_inertia);
     run("player_box_contact_does_not_cross", test_player_box_contact_does_not_cross);
@@ -1470,6 +1617,7 @@ bool run_physics_tests() {
     run("player_rotated_box_ramp_transition", test_player_rotated_box_ramp_transition);
     run("player_sprint_jump_from_demo_stairs_to_ramp_does_not_fall_through", test_player_sprint_jump_from_demo_stairs_to_ramp_does_not_fall_through);
     run("hills_radius_32_streams_without_physics_overload", test_hills_radius_32_streams_without_physics_overload);
+    run("hills_house_block_contact_keeps_floor_support", test_hills_house_block_contact_keeps_floor_support);
     if (ok) std::printf("physics tests passed\n");
     return ok;
 }
@@ -1481,6 +1629,7 @@ ol::u32 add_visual_box(ol::Dimension* dim, ol::u32 dim_id, ol::u32 cube_id, cons
     mesh.origin = test_pos(dim_id, center, dim->chunk_size_m);
     mesh.se3 = MatrixScale(size.x, size.y, size.z);
     mesh.color = color;
+    mesh.texture_id = ol::render_texture_grid;
     mesh.lit = lit;
     mesh.draw_edges = draw_edges;
     return ol::dimension_add_mesh(dim, mesh);
@@ -1508,6 +1657,12 @@ bool run_visual_test() {
 
     add_visual_box(dim, dim_id, cube_id, "floor", {0.0f, -0.55f, 0.0f}, {12.0f, 1.0f, 12.0f}, {110, 135, 120, 255}, false, false);
     add_visual_box(dim, dim_id, cube_id, "box", {0.0f, 0.7f, 0.0f}, {2.0f, 2.0f, 2.0f}, {120, 190, 140, 255}, true, true);
+    ol::PaintedPixel painted{};
+    painted.center = test_pos(dim_id, {0.03125f, 0.73125f, 1.002f}, dim->chunk_size_m);
+    painted.normal = {0.0f, 0.0f, 1.0f};
+    painted.tangent = {-1.0f, 0.0f, 0.0f};
+    painted.color = MAGENTA;
+    ol::dimension_paint_pixel(dim, painted);
 
     ol::LightSource light{};
     light.pos = test_pos(dim_id, {2.0f, 4.0f, 3.0f}, dim->chunk_size_m);
@@ -1515,6 +1670,18 @@ bool run_visual_test() {
     light.intensity = 1.1f;
     ol::dimension_add_light(dim, light);
     ol::dimension_add_player(dim, "remote", {240, 70, 90, 255}, test_pos(dim_id, {1.6f, 0.0f, 2.8f}, dim->chunk_size_m), false);
+    ol::SpriteInstance painted_sprite{};
+    painted_sprite.origin = test_pos(dim_id, {-2.2f, 1.4f, 1.0f}, dim->chunk_size_m);
+    painted_sprite.texture_id = ol::render_texture_life;
+    painted_sprite.billboard = ol::billboard_vertical;
+    const ol::u32 painted_sprite_id = ol::dimension_add_sprite(dim, painted_sprite);
+    ol::PaintedPixel sprite_pixel{};
+    sprite_pixel.center = painted_sprite.origin;
+    sprite_pixel.sprite_id = painted_sprite_id;
+    sprite_pixel.sprite_pixel_x = 4;
+    sprite_pixel.sprite_pixel_y = 4;
+    sprite_pixel.color = MAGENTA;
+    ol::dimension_paint_pixel(dim, sprite_pixel);
 
     ol::CameraView view{};
     view.anchor = test_pos(dim_id, {0.0f, 0.0f, 6.5f}, dim->chunk_size_m);
@@ -1547,14 +1714,64 @@ bool run_visual_test() {
     }
     UnloadImageColors(pixels);
     UnloadImage(img);
+    const bool player_in_edge_occlusion = renderer.debug_unbounded_scene_triangle_count >= 128;
+    const bool sprite_paint_baked = !renderer.sprite_paint_textures.empty() &&
+        IsTextureValid(renderer.sprite_paint_textures[0].texture);
+    const bool mesh_paint_layer_baked = !renderer.mesh_paint_surfaces.empty() &&
+        IsTextureValid(renderer.mesh_paint_surfaces[0].texture) && renderer.mesh_paint_surfaces[0].texture.mipmaps > 1;
     ol::renderer_shutdown(&renderer);
+
+    bool transparent_sprite_ray_passes_through = false;
+    auto paint_app = std::make_unique<ol::DemoApp>();
+    ol::renderer_init(&paint_app->renderer);
+    std::snprintf(paint_app->world_name, sizeof(paint_app->world_name), "playground");
+    std::snprintf(paint_app->session_name, sizeof(paint_app->session_name), "transparent-ray-test");
+    ol::demo_generate_world(paint_app.get());
+    ol::Dimension* paint_dim = ol::world_get_dimension(&paint_app->world, paint_app->dimension_id);
+    Image life_image = LoadImageFromTexture(paint_app->renderer.life_texture);
+    int transparent_x = -1;
+    int transparent_y = -1;
+    for (int y = 0; IsImageValid(life_image) && y < life_image.height && transparent_x < 0; ++y) {
+        for (int x = 0; x < life_image.width; ++x) {
+            if (GetImageColor(life_image, x, y).a < 128) {
+                transparent_x = x;
+                transparent_y = y;
+                break;
+            }
+        }
+    }
+    if (paint_dim && transparent_x >= 0) {
+        ol::SpriteInstance back{};
+        back.origin = test_pos(paint_app->dimension_id, {-3.0f, 1.6f, -8.0f}, paint_dim->chunk_size_m);
+        back.texture_id = ol::render_texture_grid;
+        back.billboard = ol::billboard_vertical;
+        back.size = {3.0f, 3.0f};
+        const ol::u32 back_id = ol::dimension_add_sprite(paint_dim, back);
+        const float sprite_w = static_cast<float>(life_image.width) / paint_dim->pixels_per_meter * 1.2f;
+        const float sprite_h = static_cast<float>(life_image.height) / paint_dim->pixels_per_meter * 1.2f;
+        const float target_x = -3.0f + (static_cast<float>(transparent_x) + 0.5f) / static_cast<float>(life_image.width) * sprite_w - sprite_w * 0.5f;
+        const float target_y = 1.6f + sprite_h * 0.5f - (static_cast<float>(transparent_y) + 0.5f) / static_cast<float>(life_image.height) * sprite_h;
+        ol::CameraView alpha_view{};
+        alpha_view.anchor = test_pos(paint_app->dimension_id, {target_x, target_y - 1.7f, -6.0f}, paint_dim->chunk_size_m);
+        alpha_view.eye_height = 1.7f;
+        alpha_view.yaw = 0.0f;
+        alpha_view.pitch = 0.0f;
+        ol::demo_paint_at_view(paint_app.get(), alpha_view, RED);
+        transparent_sprite_ray_passes_through = !paint_dim->painted_pixels.empty() && paint_dim->painted_pixels.back().sprite_id == back_id;
+    }
+    if (IsImageValid(life_image)) UnloadImage(life_image);
+    ol::renderer_shutdown(&paint_app->renderer);
     CloseWindow();
 
     const bool ok = expect_true(exported, "Visual smoke image exported") &&
                     expect_true(non_sky > 2000, "Visual smoke image contains scene pixels") &&
                     expect_true(dark > 20, "Visual smoke image contains solid dark edge pixels") &&
                     expect_true(box_edge_pixels > 20, "Visual smoke image contains box contour edge pixels") &&
-                    expect_true(player_pixels > 50, "Visual smoke image contains a rendered remote player");
+                    expect_true(player_pixels > 50, "Visual smoke image contains a rendered remote player") &&
+                    expect_true(player_in_edge_occlusion, "Remote player geometry participates in edge occlusion") &&
+                    expect_true(sprite_paint_baked, "Sprite paint is baked into a cached texture instead of decal geometry") &&
+                    expect_true(mesh_paint_layer_baked, "Mesh paint is assembled into a mipmapped face texture layer") &&
+                    expect_true(transparent_sprite_ray_passes_through, "Transparent sprite pixels let paint rays pass through");
     if (ok) std::printf("visual test passed: %s\n", out_path);
     return ok;
 }
@@ -2327,6 +2544,40 @@ bool run_menu_visual_test() {
                     expect_true(pause_bright > 500, "Pause smoke image contains readable controls") &&
                     expect_true(pause_enabled_accent > 300, "Pause smoke image contains enabled toggles");
     if (ok) std::printf("menu visual test passed: %s %s\n", out_path, pause_out_path);
+    return ok;
+}
+
+bool test_hills_house_block_contact_keeps_floor_support() {
+    auto app = std::make_unique<ol::DemoApp>();
+    std::snprintf(app->world_name, sizeof(app->world_name), "hills");
+    std::snprintf(app->session_name, sizeof(app->session_name), "hills-house-floor-contact");
+    app->profile.session_count = 1;
+    ol::SavedSessionState& session = app->profile.sessions[0];
+    session.valid = true;
+    std::snprintf(session.name, sizeof(session.name), "%s", app->session_name);
+    std::snprintf(session.world_name, sizeof(session.world_name), "%s", app->world_name);
+    session.player_count = 1;
+    session.players[0].valid = true;
+    session.players[0].peer_id = app->net.local_peer_id;
+    const ol::WorldPos supplied_feet = test_pos(0, {7.3614f, 3.2521f, 74.2812f}, 16.0f);
+    session.players[0].chunk = supplied_feet.chunk;
+    session.players[0].local = supplied_feet.local;
+    session.players[0].yaw = 6.192971f;
+
+    ol::demo_generate_world(app.get());
+    ol::Dimension* dim = ol::world_get_dimension(&app->world, app->dimension_id);
+    ol::PlayerEntity* player = dim ? ol::arena_get(&dim->players, app->local_player_id) : nullptr;
+    bool ok = expect_true(dim && player, "Supplied hills house pose generates its player and colliders");
+    if (!dim || !player) return false;
+
+    ol::PlayerControllerInput input{};
+    input.move = {0.0f, 1.0f};
+    float min_y = feet_y(dim, player);
+    for (int i = 0; i < 50; ++i) {
+        ol::player_controller_step(dim, player, input, 1.0f / 60.0f);
+        min_y = fminf(min_y, feet_y(dim, player));
+    }
+    ok = expect_true(min_y > 3.15f, "Touching a block in the supplied hills house does not drop through its floor") && ok;
     return ok;
 }
 

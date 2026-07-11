@@ -23,6 +23,7 @@ struct DemoFrameInput {
     bool mouse_left_pressed = false;
     bool mouse_left_down = false;
     bool mouse_left_released = false;
+    bool mouse_right_down = false;
     bool tab_pressed = false;
     bool backspace_pressed = false;
     bool escape_pressed = false;
@@ -50,12 +51,27 @@ struct SavedPlayerState {
     float current_height = player_stand_height_m;
 };
 
+struct SavedPaintPixel {
+    ChunkCoord chunk{};
+    Vector3 local{};
+    Vector3 normal = {0.0f, 1.0f, 0.0f};
+    Vector3 tangent = {1.0f, 0.0f, 0.0f};
+    Color color = WHITE;
+    Vector2 quad_offset{};
+    Vector2 quad_half_size{};
+    u32 mesh_id = invalid_id;
+    u32 sprite_id = invalid_id;
+    i32 sprite_pixel_x = 0;
+    i32 sprite_pixel_y = 0;
+};
+
 struct SavedSessionState {
     bool valid = false;
     char name[32]{};
     char world_name[32] = "playground";
     u32 player_count = 0;
     std::array<SavedPlayerState, max_players> players{};
+    std::vector<SavedPaintPixel> painted_pixels{};
 };
 
 struct DemoProfile {
@@ -97,6 +113,10 @@ struct DemoApp {
     bool mouse_captured = false;
     bool paused = false;
     bool blocking_screen_cursor_released = false;
+    bool joining_screen_active = false;
+    bool joining_restore_applied = false;
+    bool joining_paint_history_complete = false;
+    double joining_started = 0.0;
     u32 active_menu_field = menu_input_player;
     u32 dragged_menu_control = menu_control_none;
     u32 dragged_pause_control = pause_control_none;
@@ -117,6 +137,13 @@ struct DemoApp {
     std::array<u64, max_players> remote_peer_ids{};
     std::array<u32, max_players> remote_player_ids{};
     std::array<u64, max_players> restore_sent_peer_ids{};
+    std::array<u64, max_players> paint_sync_sent_peer_ids{};
+    bool last_drag_pixel_valid = false;
+    WorldPos last_drag_pixel_center{};
+    Vector3 last_drag_pixel_normal{};
+    u32 last_drag_sprite_id = invalid_id;
+    i32 last_drag_sprite_x = 0;
+    i32 last_drag_sprite_y = 0;
     DemoFrameInput frame_input{};
     std::array<bool, 512> previous_key_down{};
     bool previous_mouse_left_down = false;
@@ -131,6 +158,8 @@ void demo_init(DemoApp* app);
 void demo_shutdown(DemoApp* app);
 void demo_generate_world(DemoApp* app);
 void demo_draw_menu(DemoApp* app);
+bool demo_paint_at_view(DemoApp* app, const CameraView& view, Color color);
+bool demo_erase_at_view(DemoApp* app, const CameraView& view);
 bool demo_update_and_draw(DemoApp* app);
 int demo_run_steam_host_smoke(double timeout_s, double hold_s);
 int demo_run_steam_join_smoke(const char* lobby_id, double timeout_s);

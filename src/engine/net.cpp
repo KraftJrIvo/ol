@@ -26,6 +26,7 @@ static void net_clear_peers(NetSession* net) {
     net->peer_ids.fill(0);
     net->remote_players.fill(NetPlayerState{});
     net->remote_player_valid.fill(false);
+    net->received_paint_count = 0;
 }
 
 static bool net_find_peer(const NetSession* net, u64 peer_id, u32* out_idx) {
@@ -339,6 +340,15 @@ static void steam_receive(NetSession* net) {
                 net->restore_player.peer_id = net->local_peer_id;
                 net->restore_player_valid = true;
             }
+        } else if (from && from != net->local_peer_id && msg->m_cbSize == static_cast<int>(sizeof(NetPaintPixelPacket))) {
+            steam_accept_peer_session(from);
+            NetPaintPixelPacket packet{};
+            std::memcpy(&packet, msg->m_pData, sizeof(packet));
+            if (packet.type == net_packet_paint_pixel &&
+                (!packet.lobby_id || !net->lobby_id || packet.lobby_id == net->lobby_id) &&
+                net->received_paint_count < net->received_paints.size()) {
+                net->received_paints[net->received_paint_count++] = packet.pixel;
+            }
         }
 
         msg->Release();
@@ -554,6 +564,37 @@ void net_set_local_player(NetSession* net, const NetPlayerState& player) {
     net->local_player = player;
     net->local_player.peer_id = net->local_peer_id;
     net->local_player_valid = true;
+}
+
+void net_send_paint_pixel(NetSession* net, const NetPaintPixel& pixel) {
+#ifdef OL_USE_STEAMWORKS
+    if (!net || !net->steam_available || !net->in_lobby || !SteamNetworkingMessages()) return;
+    NetPaintPixelPacket packet{};
+    packet.lobby_id = net->lobby_id;
+    packet.pixel = pixel;
+    for (u32 i = 0; i < net->peer_count; ++i) {
+        SteamNetworkingIdentity peer_identity{};
+        peer_identity.SetSteamID64(net->peer_ids[i]);
+        steam_accept_peer_session(net->peer_ids[i]);
+        SteamNetworkingMessages()->SendMessageToUser(
+            peer_identity,
+            &packet,
+            sizeof(packet),
+            k_nSteamNetworkingSend_Reliable | k_nSteamNetworkingSend_AutoRestartBrokenSession,
+            0);
+    }
+#else
+    (void)net;
+    (void)pixel;
+#endif
+}
+
+bool net_take_paint_pixel(NetSession* net, NetPaintPixel* out_pixel) {
+    if (!net || !out_pixel || net->received_paint_count == 0) return false;
+    *out_pixel = net->received_paints[0];
+    for (u32 i = 1; i < net->received_paint_count; ++i) net->received_paints[i - 1] = net->received_paints[i];
+    --net->received_paint_count;
+    return true;
 }
 
 void net_send_player_restore(NetSession* net, u64 peer_id, const NetPlayerState& player) {

@@ -7,6 +7,8 @@
 
 namespace ol {
 
+static u64 next_paint_revision = 1;
+
 static void copy_name(char* dst, size_t dst_size, const char* src) {
     if (!dst || dst_size == 0) return;
     std::snprintf(dst, dst_size, "%s", src ? src : "");
@@ -27,10 +29,13 @@ u32 world_add_dimension(World* world, const char* name, float chunk_size_m, floa
     arena_clear(&dim->sprites);
     arena_clear(&dim->lights);
     arena_clear(&dim->players);
+    dim->painted_pixels.clear();
+    dim->paint_revision = ++next_paint_revision;
 
     copy_name(dim->name, sizeof(dim->name), name);
     dim->chunk_size_m = chunk_size_m;
     dim->meter_size_px = meter_size_px;
+    dim->pixels_per_meter = 16.0f;
     dim->render_radius_chunks = 6;
     dim->quality_render_radius_chunks = 3;
     dim->ambient = 0.32f;
@@ -136,6 +141,68 @@ u32 dimension_add_light(Dimension* dim, LightSource light) {
     Chunk* chunk = arena_get(&dim->chunks, chunk_id);
     if (chunk) chunk_add_light_ref(chunk, id);
     return id;
+}
+
+bool dimension_paint_pixel(Dimension* dim, PaintedPixel pixel) {
+    if (!dim) return false;
+    canonicalize(&pixel.center, dim->chunk_size_m);
+    const float same_pixel_epsilon = 0.25f / fmaxf(dim->pixels_per_meter, 1.0f);
+    for (u32 i = 0; i < dim->painted_pixels.size(); ++i) {
+        PaintedPixel& existing = dim->painted_pixels[i];
+        if (id_valid(pixel.sprite_id) || id_valid(existing.sprite_id)) {
+            if (existing.sprite_id == pixel.sprite_id && existing.sprite_pixel_x == pixel.sprite_pixel_x &&
+                existing.sprite_pixel_y == pixel.sprite_pixel_y) {
+                existing = pixel;
+                dim->paint_revision = ++next_paint_revision;
+                return true;
+            }
+            continue;
+        }
+        if (id_valid(pixel.mesh_id) && id_valid(existing.mesh_id) && pixel.mesh_id != existing.mesh_id &&
+            arena_has(&dim->meshes, pixel.mesh_id) && arena_has(&dim->meshes, existing.mesh_id)) continue;
+        if (Vector3DotProduct(existing.normal, pixel.normal) < 0.99f) continue;
+        if (safe_len(world_delta_meters(existing.center, pixel.center, dim->chunk_size_m)) > same_pixel_epsilon) continue;
+        existing = pixel;
+        dim->paint_revision = ++next_paint_revision;
+        return true;
+    }
+    dim->painted_pixels.push_back(pixel);
+    dim->paint_revision = ++next_paint_revision;
+    return true;
+}
+
+u32 dimension_erase_pixels(Dimension* dim, const PaintedPixel& target, float radius_pixels) {
+    if (!dim || radius_pixels <= 0.0f) return 0;
+    const float radius_m = radius_pixels / fmaxf(dim->pixels_per_meter, 1.0f);
+    u32 removed = 0;
+    for (u32 i = 0; i < dim->painted_pixels.size();) {
+        const PaintedPixel& pixel = dim->painted_pixels[i];
+        bool erase = false;
+        if (id_valid(target.sprite_id)) {
+            if (pixel.sprite_id == target.sprite_id) {
+                const float dx = static_cast<float>(pixel.sprite_pixel_x - target.sprite_pixel_x);
+                const float dy = static_cast<float>(pixel.sprite_pixel_y - target.sprite_pixel_y);
+                erase = dx * dx + dy * dy <= radius_pixels * radius_pixels;
+            }
+        } else if (!id_valid(pixel.sprite_id) &&
+            (!id_valid(target.mesh_id) || !id_valid(pixel.mesh_id) || pixel.mesh_id == target.mesh_id ||
+                !arena_has(&dim->meshes, pixel.mesh_id)) &&
+            Vector3DotProduct(pixel.normal, target.normal) > 0.99f) {
+            const Vector3 delta = world_delta_meters(pixel.center, target.center, dim->chunk_size_m);
+            const float plane_distance = std::fabs(Vector3DotProduct(delta, target.normal));
+            const Vector3 planar = delta - target.normal * Vector3DotProduct(delta, target.normal);
+            erase = plane_distance < 0.02f && safe_len(planar) <= radius_m;
+        }
+        if (!erase) {
+            ++i;
+            continue;
+        }
+        dim->painted_pixels[i] = dim->painted_pixels.back();
+        dim->painted_pixels.pop_back();
+        ++removed;
+    }
+    if (removed > 0) dim->paint_revision = ++next_paint_revision;
+    return removed;
 }
 
 bool dimension_remove_mesh(Dimension* dim, u32 mesh_id) {

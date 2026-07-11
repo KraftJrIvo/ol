@@ -88,6 +88,55 @@ static Shader load_sprite_alpha_shader(bool* out_ready) {
     return shader;
 }
 
+static std::vector<u8> texture_alpha_mask(Texture2D texture) {
+    std::vector<u8> result{};
+    if (!IsTextureValid(texture)) return result;
+    Image image = LoadImageFromTexture(texture);
+    if (!IsImageValid(image)) return result;
+    result.resize(static_cast<size_t>(image.width) * static_cast<size_t>(image.height), 255);
+    Color* colors = LoadImageColors(image);
+    if (colors) {
+        for (size_t i = 0; i < result.size(); ++i) result[i] = colors[i].a;
+        UnloadImageColors(colors);
+    }
+    UnloadImage(image);
+    return result;
+}
+
+static Texture2D make_world_texture(u32 texture_id) {
+    constexpr int size = 16;
+    Image image = GenImageColor(size, size, WHITE);
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            Color color = WHITE;
+            if (texture_id == render_texture_grid) {
+                color = (x == 0 || x == size - 1 || y == 0 || y == size - 1)
+                    ? Color{72, 100, 76, 255}
+                    : Color{176, 210, 174, 255};
+            } else if (texture_id == render_texture_grass) {
+                const u32 noise = static_cast<u32>(x * 37 + y * 73 + x * y * 11);
+                const u8 value = static_cast<u8>(175 + noise % 55);
+                color = {static_cast<u8>(value - 32), value, static_cast<u8>(value - 48), 255};
+            } else if (texture_id == render_texture_stone) {
+                const bool mortar = y == 0 || (x + ((y / 4) & 1) * 8) % 16 == 0;
+                color = mortar ? Color{108, 108, 112, 255} : Color{205, 202, 194, 255};
+            } else if (texture_id == render_texture_roof) {
+                const bool seam = y % 4 == 0 || (x + ((y / 4) & 1) * 4) % 8 == 0;
+                color = seam ? Color{104, 78, 82, 255} : Color{205, 154, 146, 255};
+            }
+            ImageDrawPixel(&image, x, y, color);
+        }
+    }
+    Texture2D texture = LoadTextureFromImage(image);
+    UnloadImage(image);
+    if (IsTextureValid(texture)) {
+        GenTextureMipmaps(&texture);
+        SetTextureFilter(texture, TEXTURE_FILTER_ANISOTROPIC_8X);
+        SetTextureWrap(texture, TEXTURE_WRAP_REPEAT);
+    }
+    return texture;
+}
+
 static Shader load_edge_depth_shader(RenderState* renderer, bool* out_ready) {
     if (out_ready) *out_ready = false;
     if (renderer) {
@@ -417,8 +466,16 @@ static void unload_edge_filter_buffers(RenderState* renderer) {
 void renderer_init(RenderState* renderer) {
     renderer->white_texture = make_white_texture();
     renderer->white_ready = true;
+    renderer->grid_texture = make_world_texture(render_texture_grid);
+    renderer->grass_texture = make_world_texture(render_texture_grass);
+    renderer->stone_texture = make_world_texture(render_texture_stone);
+    renderer->roof_texture = make_world_texture(render_texture_roof);
+    renderer->world_textures_ready = IsTextureValid(renderer->grid_texture) && IsTextureValid(renderer->grass_texture) &&
+        IsTextureValid(renderer->stone_texture) && IsTextureValid(renderer->roof_texture);
     renderer->life_texture = load_texture_from_memory(".png", res_life_png, res_life_png_len, &renderer->life_ready);
     renderer->cross_texture = load_texture_from_memory(".png", res_cross_png, res_cross_png_len, &renderer->cross_ready);
+    renderer->life_alpha = texture_alpha_mask(renderer->life_texture);
+    renderer->cross_alpha = texture_alpha_mask(renderer->cross_texture);
     renderer->sprite_alpha_shader = load_sprite_alpha_shader(&renderer->sprite_alpha_shader_ready);
     renderer->edge_depth_shader = load_edge_depth_shader(renderer, &renderer->edge_depth_shader_ready);
     renderer->edge_filter_compute_program = load_edge_filter_compute_program(renderer, &renderer->edge_filter_compute_ready);
@@ -438,6 +495,16 @@ void renderer_init(RenderState* renderer) {
 }
 
 void renderer_shutdown(RenderState* renderer) {
+    for (SpritePaintTextureCache& cache : renderer->sprite_paint_textures) {
+        if (IsTextureValid(cache.texture)) UnloadTexture(cache.texture);
+    }
+    renderer->sprite_paint_textures.clear();
+    for (MeshPaintSurfaceCache& cache : renderer->mesh_paint_surfaces) {
+        if (IsTextureValid(cache.texture)) UnloadTexture(cache.texture);
+    }
+    renderer->mesh_paint_surfaces.clear();
+    renderer->life_alpha.clear();
+    renderer->cross_alpha.clear();
     if (renderer->target_ready) {
         UnloadRenderTexture(renderer->target);
         renderer->target_ready = false;
@@ -454,6 +521,11 @@ void renderer_shutdown(RenderState* renderer) {
         UnloadTexture(renderer->cross_texture);
         renderer->cross_ready = false;
     }
+    if (IsTextureValid(renderer->grid_texture)) UnloadTexture(renderer->grid_texture);
+    if (IsTextureValid(renderer->grass_texture)) UnloadTexture(renderer->grass_texture);
+    if (IsTextureValid(renderer->stone_texture)) UnloadTexture(renderer->stone_texture);
+    if (IsTextureValid(renderer->roof_texture)) UnloadTexture(renderer->roof_texture);
+    renderer->world_textures_ready = false;
     unload_edge_depth_textures(renderer);
     unload_edge_filter_buffers(renderer);
     if (renderer->sprite_alpha_shader_ready) {
@@ -1641,11 +1713,48 @@ static void push_world_screen_edge(const Camera3D& camera, const Matrix& view_ma
     push_screen_edge(edge_list, pa, pb, a, b, width, height, color, thickness_px, use_scene_occlusion);
 }
 
+static Texture2D render_texture(RenderState* renderer, u32 texture_id) {
+    if (texture_id == render_texture_life && renderer->life_ready) return renderer->life_texture;
+    if (texture_id == render_texture_cross && renderer->cross_ready) return renderer->cross_texture;
+    if (texture_id == render_texture_grid && renderer->world_textures_ready) return renderer->grid_texture;
+    if (texture_id == render_texture_grass && renderer->world_textures_ready) return renderer->grass_texture;
+    if (texture_id == render_texture_stone && renderer->world_textures_ready) return renderer->stone_texture;
+    if (texture_id == render_texture_roof && renderer->world_textures_ready) return renderer->roof_texture;
+    return renderer->white_texture;
+}
+
+static Vector2 planar_texture_uv(Vector3 point, Vector3 origin, Vector3 normal, float pixels_per_meter, Texture2D texture) {
+    const Vector3 rel = point - origin;
+    Vector3 tangent{};
+    Vector3 bitangent{};
+    const Vector3 abs_n = {std::fabs(normal.x), std::fabs(normal.y), std::fabs(normal.z)};
+    if (abs_n.y >= abs_n.x && abs_n.y >= abs_n.z) {
+        tangent = {1.0f, 0.0f, 0.0f};
+        bitangent = {0.0f, 0.0f, normal.y >= 0.0f ? -1.0f : 1.0f};
+    } else if (abs_n.x >= abs_n.z) {
+        tangent = {0.0f, 0.0f, normal.x >= 0.0f ? 1.0f : -1.0f};
+        bitangent = {0.0f, 1.0f, 0.0f};
+    } else {
+        tangent = {normal.z >= 0.0f ? -1.0f : 1.0f, 0.0f, 0.0f};
+        bitangent = {0.0f, 1.0f, 0.0f};
+    }
+    const float tex_w = static_cast<float>(texture.width > 0 ? texture.width : 1);
+    const float tex_h = static_cast<float>(texture.height > 0 ? texture.height : 1);
+    return {
+        0.5f + Vector3DotProduct(rel, tangent) * pixels_per_meter / tex_w,
+        0.5f - Vector3DotProduct(rel, bitangent) * pixels_per_meter / tex_h
+    };
+}
+
 struct PreparedTriangle {
     Vector3 a{};
     Vector3 b{};
     Vector3 c{};
     Color color = WHITE;
+    Vector2 uv_a{};
+    Vector2 uv_b{};
+    Vector2 uv_c{};
+    u32 texture_id = invalid_id;
 };
 
 struct PreparedRenderBuffer {
@@ -1724,7 +1833,17 @@ static void prepare_mesh_instance(RenderState* renderer, Dimension* dim, const C
         const Vector3 n = safe_norm(Vector3CrossProduct(b - a, c - a));
         Color shaded = mesh->lit ? color_scaled(base, face_light(dim, view, origin, n)) : base;
         shaded = mix_color(shaded, dim->fog_color, ff);
-        out->triangles.push_back({a, b, c, shaded});
+        PreparedTriangle prepared{};
+        prepared.a = a;
+        prepared.b = b;
+        prepared.c = c;
+        prepared.color = shaded;
+        prepared.texture_id = mesh->texture_id;
+        const Texture2D texture = render_texture(renderer, mesh->texture_id);
+        prepared.uv_a = planar_texture_uv(a, origin, n, dim->pixels_per_meter, texture);
+        prepared.uv_b = planar_texture_uv(b, origin, n, dim->pixels_per_meter, texture);
+        prepared.uv_c = planar_texture_uv(c, origin, n, dim->pixels_per_meter, texture);
+        out->triangles.push_back(prepared);
         if (collect_mesh_scene_triangles) {
             Vector2 screen_min{};
             Vector2 screen_max{};
@@ -1786,7 +1905,18 @@ static void draw_mesh_instance_direct(RenderState* renderer, Dimension* dim, con
         const Vector3 n = safe_norm(Vector3CrossProduct(b - a, c - a));
         Color shaded = mesh->lit ? color_scaled(base, face_light(dim, view, origin, n)) : base;
         shaded = mix_color(shaded, dim->fog_color, ff);
-        DrawTriangle3D(a, b, c, shaded);
+        const Texture2D texture = render_texture(renderer, mesh->texture_id);
+        const Vector2 uv_a = planar_texture_uv(a, origin, n, dim->pixels_per_meter, texture);
+        const Vector2 uv_b = planar_texture_uv(b, origin, n, dim->pixels_per_meter, texture);
+        const Vector2 uv_c = planar_texture_uv(c, origin, n, dim->pixels_per_meter, texture);
+        rlSetTexture(texture.id);
+        rlBegin(RL_TRIANGLES);
+            rlColor4ub(shaded.r, shaded.g, shaded.b, shaded.a);
+            rlTexCoord2f(uv_a.x, uv_a.y); rlVertex3f(a.x, a.y, a.z);
+            rlTexCoord2f(uv_b.x, uv_b.y); rlVertex3f(b.x, b.y, b.z);
+            rlTexCoord2f(uv_c.x, uv_c.y); rlVertex3f(c.x, c.y, c.z);
+        rlEnd();
+        rlSetTexture(0);
         if (collect_mesh_scene_triangles) {
             Vector2 screen_min{};
             Vector2 screen_max{};
@@ -1817,15 +1947,23 @@ static void draw_mesh_instance_direct(RenderState* renderer, Dimension* dim, con
     }
 }
 
-static void draw_prepared_triangles(const std::vector<PreparedTriangle>& triangles) {
+static void draw_prepared_triangles(RenderState* renderer, const std::vector<PreparedTriangle>& triangles) {
     for (const PreparedTriangle& tri : triangles) {
-        DrawTriangle3D(tri.a, tri.b, tri.c, tri.color);
+        const Texture2D texture = render_texture(renderer, tri.texture_id);
+        rlSetTexture(texture.id);
+        rlBegin(RL_TRIANGLES);
+            rlColor4ub(tri.color.r, tri.color.g, tri.color.b, tri.color.a);
+            rlTexCoord2f(tri.uv_a.x, tri.uv_a.y); rlVertex3f(tri.a.x, tri.a.y, tri.a.z);
+            rlTexCoord2f(tri.uv_b.x, tri.uv_b.y); rlVertex3f(tri.b.x, tri.b.y, tri.b.z);
+            rlTexCoord2f(tri.uv_c.x, tri.uv_c.y); rlVertex3f(tri.c.x, tri.c.y, tri.c.z);
+        rlEnd();
+        rlSetTexture(0);
     }
 }
 
-static void draw_prepared_triangles(const PreparedRenderBatch& batch) {
+static void draw_prepared_triangles(RenderState* renderer, const PreparedRenderBatch& batch) {
     for (const PreparedRenderBuffer& buffer : batch.buffers) {
-        draw_prepared_triangles(buffer.triangles);
+        draw_prepared_triangles(renderer, buffer.triangles);
     }
 }
 
@@ -1896,12 +2034,6 @@ static PreparedRenderBatch prepare_mesh_jobs_parallel(RenderState* renderer, Dim
     return batch;
 }
 
-static Texture2D sprite_texture(RenderState* renderer, u32 texture_id) {
-    if (texture_id == render_texture_life && renderer->life_ready) return renderer->life_texture;
-    if (texture_id == render_texture_cross && renderer->cross_ready) return renderer->cross_texture;
-    return renderer->white_texture;
-}
-
 struct SpriteQuad {
     Vector3 bottom_left{};
     Vector3 bottom_right{};
@@ -1909,7 +2041,7 @@ struct SpriteQuad {
     Vector3 top_left{};
 };
 
-static SpriteQuad make_sprite_quad(const SpriteInstance* sprite, Vector3 center, const Camera3D& camera) {
+static SpriteQuad make_sprite_quad(const SpriteInstance* sprite, Vector3 center, const Camera3D& camera, Texture2D texture, float pixels_per_meter) {
     Vector3 right = {1.0f, 0.0f, 0.0f};
     Vector3 up = {0.0f, 1.0f, 0.0f};
 
@@ -1929,8 +2061,13 @@ static SpriteQuad make_sprite_quad(const SpriteInstance* sprite, Vector3 center,
         up = safe_norm(Vector3Transform({0.0f, 1.0f, 0.0f}, basis), {0.0f, 1.0f, 0.0f});
     }
 
-    const Vector3 half_right = right * (sprite->size.x * 0.5f);
-    const Vector3 half_up = up * (sprite->size.y * 0.5f);
+    const float ppm = fmaxf(1.0f, pixels_per_meter);
+    const Vector2 world_size = {
+        static_cast<float>(texture.width) / ppm * sprite->size.x,
+        static_cast<float>(texture.height) / ppm * sprite->size.y
+    };
+    const Vector3 half_right = right * (world_size.x * 0.5f);
+    const Vector3 half_up = up * (world_size.y * 0.5f);
     return {
         center - half_right - half_up,
         center + half_right - half_up,
@@ -1960,6 +2097,8 @@ static void draw_textured_sprite_quad(Texture2D texture, Rectangle source, const
     rlEnableBackfaceCulling();
 }
 
+static Texture2D painted_sprite_texture(RenderState* renderer, const Dimension* dim, u32 sprite_id, const SpriteInstance* sprite, Color* out_tint);
+
 static void draw_sprites(RenderState* renderer, Dimension* dim, const CameraView& view, const Camera3D& camera, const Chunk* chunk) {
     if (renderer->sprite_alpha_shader_ready) {
         BeginShaderMode(renderer->sprite_alpha_shader);
@@ -1971,10 +2110,12 @@ static void draw_sprites(RenderState* renderer, Dimension* dim, const CameraView
         const SpriteInstance* sprite = arena_get(&dim->sprites, chunk->sprites[i]);
         if (!sprite || !sprite->visible) continue;
         const Vector3 rel = world_delta_meters(sprite->origin, view.anchor, dim->chunk_size_m);
-        const Texture2D texture = sprite_texture(renderer, sprite->texture_id);
+        const u32 sprite_id = chunk->sprites[i];
+        Color sprite_tint = sprite->color;
+        const Texture2D texture = painted_sprite_texture(renderer, dim, sprite_id, sprite, &sprite_tint);
         const Rectangle source = {0.0f, 0.0f, static_cast<float>(texture.width), static_cast<float>(texture.height)};
-        const SpriteQuad quad = make_sprite_quad(sprite, rel, camera);
-        draw_textured_sprite_quad(texture, source, quad, sprite->color);
+        const SpriteQuad quad = make_sprite_quad(sprite, rel, camera, texture, dim->pixels_per_meter);
+        draw_textured_sprite_quad(texture, source, quad, sprite_tint);
     }
 
     if (renderer->sprite_alpha_shader_ready) {
@@ -1994,6 +2135,75 @@ static void push_player_ring_edges(RenderState* renderer, const Camera3D& camera
         const Vector3 p1 = center + Vector3{std::cos(a1) * radius, 0.0f, std::sin(a1) * radius};
         push_world_screen_edge(camera, view_matrix, projection_matrix, renderer->native_w, renderer->native_h, near_plane, edge_list, p0, p1, color, thickness_px);
     }
+}
+
+static Texture2D painted_sprite_texture(RenderState* renderer, const Dimension* dim, u32 sprite_id, const SpriteInstance* sprite, Color* out_tint) {
+    const Texture2D base = render_texture(renderer, sprite->texture_id);
+    bool has_paint = false;
+    u64 sprite_paint_hash = 1469598103934665603ull;
+    for (const PaintedPixel& pixel : dim->painted_pixels) {
+        if (pixel.sprite_id == sprite_id) {
+            has_paint = true;
+            sprite_paint_hash ^= static_cast<u64>(static_cast<u32>(pixel.sprite_pixel_x));
+            sprite_paint_hash *= 1099511628211ull;
+            sprite_paint_hash ^= static_cast<u64>(static_cast<u32>(pixel.sprite_pixel_y));
+            sprite_paint_hash *= 1099511628211ull;
+            sprite_paint_hash ^= static_cast<u64>(ColorToInt(pixel.color));
+            sprite_paint_hash *= 1099511628211ull;
+        }
+    }
+
+    auto cache_at = renderer->sprite_paint_textures.end();
+    for (auto it = renderer->sprite_paint_textures.begin(); it != renderer->sprite_paint_textures.end(); ++it) {
+        if (it->sprite_id == sprite_id) {
+            cache_at = it;
+            break;
+        }
+    }
+    if (!has_paint) {
+        if (cache_at != renderer->sprite_paint_textures.end()) {
+            if (IsTextureValid(cache_at->texture)) UnloadTexture(cache_at->texture);
+            renderer->sprite_paint_textures.erase(cache_at);
+        }
+        if (out_tint) *out_tint = sprite->color;
+        return base;
+    }
+
+    const bool cache_valid = cache_at != renderer->sprite_paint_textures.end() &&
+        cache_at->paint_revision == sprite_paint_hash &&
+        cache_at->base_texture_id == sprite->texture_id &&
+        ColorIsEqual(cache_at->tint, sprite->color) && IsTextureValid(cache_at->texture);
+    if (!cache_valid) {
+        if (cache_at == renderer->sprite_paint_textures.end()) {
+            renderer->sprite_paint_textures.push_back({});
+            cache_at = renderer->sprite_paint_textures.end() - 1;
+        } else if (IsTextureValid(cache_at->texture)) {
+            UnloadTexture(cache_at->texture);
+            cache_at->texture = {};
+        }
+
+        Image image = LoadImageFromTexture(base);
+        if (IsImageValid(image)) {
+            ImageColorTint(&image, sprite->color);
+            for (const PaintedPixel& pixel : dim->painted_pixels) {
+                if (pixel.sprite_id != sprite_id || pixel.sprite_pixel_x < 0 || pixel.sprite_pixel_y < 0 ||
+                    pixel.sprite_pixel_x >= image.width || pixel.sprite_pixel_y >= image.height) continue;
+                ImageDrawPixel(&image, pixel.sprite_pixel_x, pixel.sprite_pixel_y, pixel.color);
+            }
+            cache_at->texture = LoadTextureFromImage(image);
+            UnloadImage(image);
+            if (IsTextureValid(cache_at->texture)) {
+                GenTextureMipmaps(&cache_at->texture);
+                SetTextureFilter(cache_at->texture, TEXTURE_FILTER_ANISOTROPIC_8X);
+            }
+        }
+        cache_at->sprite_id = sprite_id;
+        cache_at->base_texture_id = sprite->texture_id;
+        cache_at->paint_revision = sprite_paint_hash;
+        cache_at->tint = sprite->color;
+    }
+    if (out_tint) *out_tint = WHITE;
+    return IsTextureValid(cache_at->texture) ? cache_at->texture : base;
 }
 
 static void push_player_cylinder_triangles(SceneTriangleList* scene_triangles, Vector3 bottom, Vector3 top, float radius) {
@@ -2150,9 +2360,9 @@ static void draw_player_aim_rays(RenderState* renderer, Dimension* dim, const Ca
         marker.texture_id = render_texture_cross;
         marker.color = color;
         marker.billboard = billboard_full_3d;
-        const Texture2D texture = sprite_texture(renderer, marker.texture_id);
+        const Texture2D texture = render_texture(renderer, marker.texture_id);
         const Rectangle source = {0.0f, 0.0f, static_cast<float>(texture.width), static_cast<float>(texture.height)};
-        const SpriteQuad quad = make_sprite_quad(&marker, end, camera);
+        const SpriteQuad quad = make_sprite_quad(&marker, end, camera, texture, dim->pixels_per_meter);
         if (use_shader) BeginShaderMode(renderer->sprite_alpha_shader);
         else rlDisableDepthMask();
         draw_textured_sprite_quad(texture, source, quad, marker.color);
@@ -2178,6 +2388,253 @@ static void draw_physics(RenderState* renderer, Dimension* dim, const CameraView
         const Vector3 rel = world_delta_meters(light->pos, view.anchor, dim->chunk_size_m);
         DrawSphere(rel, 0.12f, light->color);
     }
+}
+
+static Vector3 canonical_surface_normal(Vector3 normal) {
+    normal = safe_norm(normal, {0.0f, 1.0f, 0.0f});
+    const Vector3 a = {std::fabs(normal.x), std::fabs(normal.y), std::fabs(normal.z)};
+    const float dominant = a.x >= a.y && a.x >= a.z ? normal.x : (a.y >= a.z ? normal.y : normal.z);
+    return dominant < 0.0f ? normal * -1.0f : normal;
+}
+
+static Vector3 surface_tangent(Vector3 normal) {
+    const Vector3 a = {std::fabs(normal.x), std::fabs(normal.y), std::fabs(normal.z)};
+    if (a.y >= a.x && a.y >= a.z) return {1.0f, 0.0f, 0.0f};
+    if (a.x >= a.z) return {0.0f, 0.0f, normal.x >= 0.0f ? 1.0f : -1.0f};
+    return {normal.z >= 0.0f ? -1.0f : 1.0f, 0.0f, 0.0f};
+}
+
+static bool paint_pixel_matches_mesh(const Dimension* dim, const PaintedPixel& pixel, const MeshInstance* mesh) {
+    const MeshGeometry* geometry = mesh ? arena_get(&dim->geometries, mesh->geometry) : nullptr;
+    if (!geometry) return false;
+    const Vector3 rel = world_delta_meters(pixel.center, mesh->origin, dim->chunk_size_m);
+    if (safe_len(rel) > mesh->bounds_radius + 0.1f) return false;
+    const Matrix basis = matrix_no_translation(mesh->se3);
+    Vector3 vertices[max_vertices_per_geometry]{};
+    for (u32 i = 0; i < geometry->vertex_count; ++i) vertices[i] = Vector3Transform(geometry->vertices[i], basis);
+    for (u32 i = 0; i < geometry->triangle_count; ++i) {
+        const Triangle tri = geometry->triangles[i];
+        const Vector3 a = vertices[tri.a];
+        const Vector3 b = vertices[tri.b];
+        const Vector3 c = vertices[tri.c];
+        const Vector3 normal = safe_norm(Vector3CrossProduct(b - a, c - a));
+        if (std::fabs(Vector3DotProduct(pixel.normal, normal)) < 0.99f ||
+            std::fabs(Vector3DotProduct(rel - a, normal)) > 0.02f) continue;
+        const Vector3 v0 = b - a;
+        const Vector3 v1 = c - a;
+        const Vector3 v2 = rel - a;
+        const float d00 = Vector3DotProduct(v0, v0);
+        const float d01 = Vector3DotProduct(v0, v1);
+        const float d11 = Vector3DotProduct(v1, v1);
+        const float d20 = Vector3DotProduct(v2, v0);
+        const float d21 = Vector3DotProduct(v2, v1);
+        const float denominator = d00 * d11 - d01 * d01;
+        if (std::fabs(denominator) < 0.000001f) continue;
+        const float v = (d11 * d20 - d01 * d21) / denominator;
+        const float w = (d00 * d21 - d01 * d20) / denominator;
+        const float u = 1.0f - v - w;
+        if (u >= -0.05f && v >= -0.05f && w >= -0.05f) return true;
+    }
+    return false;
+}
+
+static u64 paint_mesh_signature(const MeshInstance& mesh, u32 mesh_id) {
+    u64 hash = 1469598103934665603ull;
+    auto add = [&](u64 value) { hash ^= value; hash *= 1099511628211ull; };
+    add(mesh_id); add(mesh.geometry);
+    add(static_cast<u32>(mesh.origin.chunk.x));
+    add(static_cast<u32>(mesh.origin.chunk.y));
+    add(static_cast<u32>(mesh.origin.chunk.z));
+    u32 bits = 0;
+    std::memcpy(&bits, &mesh.origin.local.x, sizeof(bits)); add(bits);
+    std::memcpy(&bits, &mesh.origin.local.y, sizeof(bits)); add(bits);
+    std::memcpy(&bits, &mesh.origin.local.z, sizeof(bits)); add(bits);
+    const float transform[] = {
+        mesh.se3.m0, mesh.se3.m1, mesh.se3.m2, mesh.se3.m3,
+        mesh.se3.m4, mesh.se3.m5, mesh.se3.m6, mesh.se3.m7,
+        mesh.se3.m8, mesh.se3.m9, mesh.se3.m10, mesh.se3.m11,
+        mesh.se3.m12, mesh.se3.m13, mesh.se3.m14, mesh.se3.m15};
+    for (float value : transform) { std::memcpy(&bits, &value, sizeof(bits)); add(bits); }
+    return hash;
+}
+
+static void update_mesh_paint_surfaces(RenderState* renderer, Dimension* dim) {
+    if (!renderer || !dim) return;
+    u64 topology_hash = 1469598103934665603ull;
+    for (u32 slot = 0; slot < dim->meshes.count; ++slot) {
+        topology_hash ^= paint_mesh_signature(dim->meshes.data[slot], arena_id_at_slot(&dim->meshes, slot));
+        topology_hash *= 1099511628211ull;
+    }
+    if (renderer->mesh_paint_revision == dim->paint_revision && renderer->mesh_paint_topology_hash == topology_hash) return;
+    const bool topology_changed = renderer->mesh_paint_topology_hash != topology_hash;
+    renderer->mesh_paint_revision = dim->paint_revision;
+    renderer->mesh_paint_topology_hash = topology_hash;
+
+    std::vector<std::vector<u32>> paint_by_mesh(dim->meshes.count);
+    for (u32 pixel_index = 0; pixel_index < dim->painted_pixels.size(); ++pixel_index) {
+        PaintedPixel& pixel = dim->painted_pixels[pixel_index];
+        if (id_valid(pixel.sprite_id)) continue;
+        u32 mesh_slot = invalid_id;
+        if (arena_has(&dim->meshes, pixel.mesh_id)) {
+            const u32 candidate_slot = dim->meshes.slot_of_id[pixel.mesh_id];
+            if (!topology_changed || paint_pixel_matches_mesh(dim, pixel, &dim->meshes.data[candidate_slot])) mesh_slot = candidate_slot;
+        }
+        if (!id_valid(mesh_slot)) {
+            for (u32 slot = 0; slot < dim->meshes.count; ++slot) {
+                if (!paint_pixel_matches_mesh(dim, pixel, &dim->meshes.data[slot])) continue;
+                mesh_slot = slot;
+                pixel.mesh_id = arena_id_at_slot(&dim->meshes, slot);
+                break;
+            }
+        }
+        if (id_valid(mesh_slot)) paint_by_mesh[mesh_slot].push_back(pixel_index);
+    }
+
+    std::vector<MeshPaintSurfaceCache> old_surfaces = std::move(renderer->mesh_paint_surfaces);
+    renderer->mesh_paint_surfaces.clear();
+
+    const float ppm = fmaxf(dim->pixels_per_meter, 1.0f);
+    for (u32 mesh_slot = 0; mesh_slot < dim->meshes.count; ++mesh_slot) {
+        const std::vector<u32>& mesh_paint = paint_by_mesh[mesh_slot];
+        if (mesh_paint.empty()) continue;
+        const u32 mesh_id = arena_id_at_slot(&dim->meshes, mesh_slot);
+        u64 paint_hash = paint_mesh_signature(dim->meshes.data[mesh_slot], mesh_id);
+        for (u32 pixel_index : mesh_paint) {
+            const PaintedPixel& pixel = dim->painted_pixels[pixel_index];
+            paint_hash ^= static_cast<u64>(pixel_index); paint_hash *= 1099511628211ull;
+            paint_hash ^= static_cast<u64>(ColorToInt(pixel.color)); paint_hash *= 1099511628211ull;
+        }
+        bool reused = false;
+        for (MeshPaintSurfaceCache& old : old_surfaces) {
+            if (old.mesh_id != mesh_id || old.paint_hash != paint_hash || !IsTextureValid(old.texture)) continue;
+            renderer->mesh_paint_surfaces.push_back(std::move(old));
+            old.texture = {};
+            reused = true;
+        }
+        if (reused) continue;
+        const MeshInstance* mesh = &dim->meshes.data[mesh_slot];
+        const MeshGeometry* geometry = arena_get(&dim->geometries, mesh->geometry);
+        if (!geometry) continue;
+        const Matrix basis = matrix_no_translation(mesh->se3);
+        Vector3 vertices[max_vertices_per_geometry]{};
+        for (u32 i = 0; i < geometry->vertex_count; ++i) vertices[i] = Vector3Transform(geometry->vertices[i], basis);
+
+        std::vector<MeshPaintSurfaceCache> surfaces{};
+        for (u32 tri_index = 0; tri_index < geometry->triangle_count; ++tri_index) {
+            const Triangle tri = geometry->triangles[tri_index];
+            const Vector3 normal = canonical_surface_normal(Vector3CrossProduct(vertices[tri.b] - vertices[tri.a], vertices[tri.c] - vertices[tri.a]));
+            const float plane = Vector3DotProduct(vertices[tri.a], normal);
+            auto found = surfaces.end();
+            for (auto it = surfaces.begin(); it != surfaces.end(); ++it) {
+                if (Vector3DotProduct(it->normal, normal) > 0.999f && std::fabs(it->plane - plane) < 0.005f) {
+                    found = it;
+                    break;
+                }
+            }
+            if (found == surfaces.end()) {
+                MeshPaintSurfaceCache surface{};
+                surface.mesh_id = mesh_id;
+                surface.geometry_id = mesh->geometry;
+                surface.paint_hash = paint_hash;
+                surface.normal = normal;
+                surface.tangent = surface_tangent(normal);
+                surface.bitangent = safe_norm(Vector3CrossProduct(normal, surface.tangent), {0.0f, 0.0f, 1.0f});
+                surface.plane = plane;
+                surfaces.push_back(std::move(surface));
+                found = surfaces.end() - 1;
+            }
+            found->triangles.push_back(tri_index);
+        }
+
+        for (MeshPaintSurfaceCache& surface : surfaces) {
+            float min_u = std::numeric_limits<float>::max();
+            float max_u = -std::numeric_limits<float>::max();
+            float min_v = std::numeric_limits<float>::max();
+            float max_v = -std::numeric_limits<float>::max();
+            for (u32 tri_index : surface.triangles) {
+                const Triangle tri = geometry->triangles[tri_index];
+                for (u32 vertex_index : {tri.a, tri.b, tri.c}) {
+                    const float u = Vector3DotProduct(vertices[vertex_index], surface.tangent);
+                    const float v = Vector3DotProduct(vertices[vertex_index], surface.bitangent);
+                    min_u = fminf(min_u, u); max_u = fmaxf(max_u, u);
+                    min_v = fminf(min_v, v); max_v = fmaxf(max_v, v);
+                }
+            }
+            surface.grid_min_u = static_cast<i32>(std::floor(min_u * ppm));
+            surface.grid_min_v = static_cast<i32>(std::floor(min_v * ppm));
+            const i32 grid_max_u = static_cast<i32>(std::ceil(max_u * ppm));
+            const i32 grid_max_v = static_cast<i32>(std::ceil(max_v * ppm));
+            surface.width = grid_max_u - surface.grid_min_u;
+            surface.height = grid_max_v - surface.grid_min_v;
+            if (surface.width <= 0 || surface.height <= 0 || surface.width > 8192 || surface.height > 8192) continue;
+
+            Image image = GenImageColor(surface.width, surface.height, BLANK);
+            bool painted = false;
+            for (u32 pixel_index : mesh_paint) {
+                const PaintedPixel& pixel = dim->painted_pixels[pixel_index];
+                if (std::fabs(Vector3DotProduct(pixel.normal, surface.normal)) < 0.99f) continue;
+                const Vector3 rel = world_delta_meters(pixel.center, mesh->origin, dim->chunk_size_m);
+                if (std::fabs(Vector3DotProduct(rel, surface.normal) - surface.plane) > 0.02f) continue;
+                const i32 x = static_cast<i32>(std::floor(Vector3DotProduct(rel, surface.tangent) * ppm)) - surface.grid_min_u;
+                const i32 y = static_cast<i32>(std::floor(Vector3DotProduct(rel, surface.bitangent) * ppm)) - surface.grid_min_v;
+                if (x < 0 || y < 0 || x >= surface.width || y >= surface.height) continue;
+                ImageDrawPixel(&image, x, y, pixel.color);
+                painted = true;
+            }
+            if (painted) {
+                surface.texture = LoadTextureFromImage(image);
+                if (IsTextureValid(surface.texture)) {
+                    GenTextureMipmaps(&surface.texture);
+                    SetTextureFilter(surface.texture, TEXTURE_FILTER_ANISOTROPIC_8X);
+                    SetTextureWrap(surface.texture, TEXTURE_WRAP_CLAMP);
+                    renderer->mesh_paint_surfaces.push_back(std::move(surface));
+                }
+            }
+            UnloadImage(image);
+        }
+    }
+    for (MeshPaintSurfaceCache& old : old_surfaces) {
+        if (IsTextureValid(old.texture)) UnloadTexture(old.texture);
+    }
+}
+
+static void draw_painted_pixels(RenderState* renderer, const Dimension* dim, const CameraView& view) {
+    if (!renderer || !dim) return;
+    const float ppm = fmaxf(dim->pixels_per_meter, 1.0f);
+    rlDrawRenderBatchActive();
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(-1.0f, -1.0f);
+    rlDisableBackfaceCulling();
+    for (const MeshPaintSurfaceCache& surface : renderer->mesh_paint_surfaces) {
+        const MeshInstance* mesh = arena_get(&dim->meshes, surface.mesh_id);
+        const MeshGeometry* geometry = mesh ? arena_get(&dim->geometries, surface.geometry_id) : nullptr;
+        if (!mesh || !mesh->visible || !geometry || !IsTextureValid(surface.texture)) continue;
+        const Vector3 origin = world_delta_meters(mesh->origin, view.anchor, dim->chunk_size_m);
+        const float fade = mesh_edge_alpha(dim, safe_len(origin) / fmaxf(dim->chunk_size_m, 0.001f));
+        if (fade <= 0.0f) continue;
+        const Matrix basis = matrix_no_translation(mesh->se3);
+        rlSetTexture(surface.texture.id);
+        for (u32 tri_index : surface.triangles) {
+            const Triangle tri = geometry->triangles[tri_index];
+            Vector3 p[3] = {
+                Vector3Transform(geometry->vertices[tri.a], basis),
+                Vector3Transform(geometry->vertices[tri.b], basis),
+                Vector3Transform(geometry->vertices[tri.c], basis)};
+            rlBegin(RL_TRIANGLES);
+                rlColor4ub(255, 255, 255, static_cast<u8>(std::round(255.0f * fade)));
+                for (Vector3 local : p) {
+                    const float u = (Vector3DotProduct(local, surface.tangent) * ppm - static_cast<float>(surface.grid_min_u)) / static_cast<float>(surface.width);
+                    const float v = (Vector3DotProduct(local, surface.bitangent) * ppm - static_cast<float>(surface.grid_min_v)) / static_cast<float>(surface.height);
+                    const Vector3 point = local + origin;
+                    rlTexCoord2f(u, v); rlVertex3f(point.x, point.y, point.z);
+                }
+            rlEnd();
+        }
+        rlSetTexture(0);
+    }
+    rlEnableBackfaceCulling();
+    rlDrawRenderBatchActive();
+    glDisable(GL_POLYGON_OFFSET_FILL);
 }
 
 static void draw_crosshair(RenderState* renderer) {
@@ -2248,6 +2705,14 @@ void renderer_render_dimension_to_target(RenderState* renderer, Dimension* dim, 
             mesh_jobs);
     }
 
+    for (u32 slot = 0; slot < dim->sprites.count; ++slot) {
+        const u32 sprite_id = arena_id_at_slot(&dim->sprites, slot);
+        const SpriteInstance* sprite = &dim->sprites.data[slot];
+        Color ignored_tint{};
+        painted_sprite_texture(renderer, dim, sprite_id, sprite, &ignored_tint);
+    }
+    update_mesh_paint_surfaces(renderer, dim);
+
     BeginTextureMode(renderer->target);
     ClearBackground(dim->sky_top);
     DrawRectangleGradientV(0, 0, renderer->native_w, renderer->native_h, dim->sky_top, dim->sky_bottom);
@@ -2270,7 +2735,7 @@ void renderer_render_dimension_to_target(RenderState* renderer, Dimension* dim, 
                 append_scene_triangle(&scene_triangles, tri);
             }
         }
-        draw_prepared_triangles(prepared);
+        draw_prepared_triangles(renderer, prepared);
     } else {
         scene_triangles.triangles.reserve(2048);
         SceneTriangleList* scene_triangle_target = collect_scene_triangles ? &scene_triangles : nullptr;
@@ -2282,6 +2747,14 @@ void renderer_render_dimension_to_target(RenderState* renderer, Dimension* dim, 
             }
         }
     }
+    renderer->debug_edge_count = edge_list.count;
+    renderer->debug_scene_triangle_count = static_cast<u32>(scene_triangles.triangles.size());
+    renderer->debug_unbounded_scene_triangle_count = static_cast<u32>(scene_triangles.unbounded.size());
+
+    draw_painted_pixels(renderer, dim, view);
+
+    PlayerNameTag hovered_tag{};
+    draw_players(renderer, dim, view, local_player_id, camera, view_matrix, projection_matrix, near_plane, &edge_list, &scene_triangles, &hovered_tag);
     renderer->debug_edge_count = edge_list.count;
     renderer->debug_scene_triangle_count = static_cast<u32>(scene_triangles.triangles.size());
     renderer->debug_unbounded_scene_triangle_count = static_cast<u32>(scene_triangles.unbounded.size());
@@ -2307,8 +2780,6 @@ void renderer_render_dimension_to_target(RenderState* renderer, Dimension* dim, 
         }
     }
 
-    PlayerNameTag hovered_tag{};
-    draw_players(renderer, dim, view, local_player_id, camera, view_matrix, projection_matrix, near_plane, &edge_list, nullptr, &hovered_tag);
     draw_player_aim_rays(renderer, dim, view, local_player_id, camera);
     draw_physics(renderer, dim, view);
 

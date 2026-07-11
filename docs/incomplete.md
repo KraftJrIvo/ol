@@ -9,8 +9,9 @@ partial behavior, or first-pass demo code.
 - Proper fog volume. Current fog is per-object/per-chunk color mixing, not depth fog.
 - Real ambient+diffuse shader path for meshes and sprites. Current mesh lighting is
   CPU face shading; sprites are flat billboards.
-- Texture and normal-map rendering. IDs exist in data structs, but there is no asset
-  table or shader sampling path yet.
+- Imported texture and normal-map assets. Procedural nearest-neighbor world textures,
+  meter-scaled planar UVs, sprites, and shared painted texels are implemented; a
+  general asset table and normal-map shader path are still pending.
 - Custom vertex/fragment shaders per mesh/sprite. Fields exist, but shader loading
   and binding are not implemented.
 - Material stacking beyond color override. Stack data exists, but only color is

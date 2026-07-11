@@ -6,6 +6,7 @@
 #include "raylib.h"
 
 #include <array>
+#include <vector>
 
 namespace ol {
 
@@ -95,6 +96,19 @@ struct LightSource {
     float intensity = 1.0f;
 };
 
+struct PaintedPixel {
+    WorldPos center{};
+    Vector3 normal = {0.0f, 1.0f, 0.0f};
+    Vector3 tangent = {1.0f, 0.0f, 0.0f};
+    Color color = WHITE;
+    Vector2 quad_offset{};
+    Vector2 quad_half_size{};
+    u32 mesh_id = invalid_id;
+    u32 sprite_id = invalid_id;
+    i32 sprite_pixel_x = 0;
+    i32 sprite_pixel_y = 0;
+};
+
 struct Chunk {
     ChunkCoord coord{};
     u32 mesh_count = 0;
@@ -135,6 +149,7 @@ struct Dimension {
     char name[64]{};
     float chunk_size_m = 16.0f;
     float meter_size_px = 64.0f;
+    float pixels_per_meter = 16.0f;
     i32 render_radius_chunks = 6;
     i32 quality_render_radius_chunks = 3;
     float ambient = 0.32f;
@@ -148,6 +163,8 @@ struct Dimension {
     Arena<max_sprites, SpriteInstance> sprites{};
     Arena<max_lights, LightSource> lights{};
     Arena<max_players, PlayerEntity> players{};
+    std::vector<PaintedPixel> painted_pixels{};
+    u64 paint_revision = 1;
     PhysicsWorld physics{};
 };
 
@@ -166,6 +183,8 @@ u32 dimension_add_geometry(Dimension* dim, const MeshGeometry& geometry);
 u32 dimension_add_mesh(Dimension* dim, MeshInstance mesh);
 u32 dimension_add_sprite(Dimension* dim, SpriteInstance sprite);
 u32 dimension_add_light(Dimension* dim, LightSource light);
+bool dimension_paint_pixel(Dimension* dim, PaintedPixel pixel);
+u32 dimension_erase_pixels(Dimension* dim, const PaintedPixel& target, float radius_pixels);
 bool dimension_remove_mesh(Dimension* dim, u32 mesh_id);
 u32 dimension_add_player(Dimension* dim, const char* name, Color color, WorldPos feet_pos, bool local);
 

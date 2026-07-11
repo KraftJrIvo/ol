@@ -118,13 +118,26 @@ static bool cylinder_overlaps_box_at_height(const Dimension* dim, const BoxColli
 }
 
 static bool surface_has_immediate_clearance(const Dimension* dim, const PlayerEntity* player, WorldPos surface_feet, double surface_y, u32 ignore_box_slot) {
+    WorldPos clearance_point = surface_feet;
+    const BoxCollider* support = ignore_box_slot < dim->physics.boxes.count ? &dim->physics.boxes.data[ignore_box_slot] : nullptr;
+    if (support && support->axis_aligned) {
+        const Vector3 support_rel = world_delta_meters(surface_feet, support->pos, dim->chunk_size_m);
+        worldpos_add_delta(
+            &clearance_point,
+            {
+                clampf(support_rel.x, -support->half.x, support->half.x) - support_rel.x,
+                0.0f,
+                clampf(support_rel.z, -support->half.z, support->half.z) - support_rel.z
+            },
+            dim->chunk_size_m);
+    }
     for (u32 slot = 0; slot < dim->physics.boxes.count; ++slot) {
         if (slot == ignore_box_slot) continue;
         const BoxCollider* other = &dim->physics.boxes.data[slot];
         if (!other->axis_aligned) continue;
-        if (!box_near_feet_xz(dim, other, surface_feet, player ? player->body_radius : 0.02f, 0.12f)) continue;
-        const Vector3 rel = world_delta_meters(surface_feet, other->pos, dim->chunk_size_m);
-        const float footprint_eps = surface_y > 0.05 && player ? player->body_radius : 0.02f;
+        if (!box_near_feet_xz(dim, other, clearance_point, 0.02f, 0.12f)) continue;
+        const Vector3 rel = world_delta_meters(clearance_point, other->pos, dim->chunk_size_m);
+        constexpr float footprint_eps = 0.02f;
         if (std::fabs(rel.x) > other->half.x + footprint_eps) continue;
         if (std::fabs(rel.z) > other->half.z + footprint_eps) continue;
         const double other_bottom = world_y_meters(other->pos, dim->chunk_size_m) - static_cast<double>(other->half.y);
@@ -618,9 +631,13 @@ void player_controller_step(Dimension* dim, PlayerEntity* player, const PlayerCo
         player->velocity.x = current_h.x;
         player->velocity.z = current_h.z;
     } else {
-        const float air_speed = safe_len(current_h);
+        const float current_speed = safe_len(current_h);
+        const float air_speed = fmaxf(current_speed, player_air_control_speed_mps);
         target_h = safe_len(target_h) > 0.001f ? safe_norm(target_h) * air_speed : Vector3Zero();
-        current_h = approach_horizontal_velocity(current_h, target_h, player_air_accel_mps2 * dt);
+        const float air_accel = current_speed < player_air_control_speed_mps - 0.01f && safe_len(target_h) > current_speed
+            ? player_air_gain_accel_mps2
+            : player_air_accel_mps2;
+        current_h = approach_horizontal_velocity(current_h, target_h, air_accel * dt);
         if (safe_len(current_h) > air_speed) current_h = safe_norm(current_h) * air_speed;
         player->velocity.x = current_h.x;
         player->velocity.z = current_h.z;

@@ -1,6 +1,7 @@
 #include "demo/demo.h"
 #include "demo/menu.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -14,6 +15,7 @@ static void record_current_world_state(DemoApp* app);
 static void save_profile(DemoApp* app);
 static CameraView make_player_camera_view(DemoApp* app, Dimension* dim, const PlayerEntity* player);
 static bool sync_session_from_network(DemoApp* app, Dimension* dim, PlayerEntity* player);
+static bool update_network_state(DemoApp* app, Dimension* dim, PlayerEntity* player);
 
 static void add_text_char(char* text, size_t cap, int c) {
     if (c < 32 || c > 126) return;
@@ -78,9 +80,11 @@ static void capture_frame_input(DemoApp* app) {
 
     DemoFrameInput input{};
     const bool left_down = IsMouseButtonDown(MOUSE_LEFT_BUTTON);
+    const bool right_down = IsMouseButtonDown(MOUSE_RIGHT_BUTTON);
     input.mouse_left_down = left_down;
     input.mouse_left_pressed = IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || (left_down && !app->previous_mouse_left_down);
     input.mouse_left_released = IsMouseButtonReleased(MOUSE_LEFT_BUTTON) || (!left_down && app->previous_mouse_left_down);
+    input.mouse_right_down = right_down;
 
     input.tab_pressed = frame_key_pressed(app, KEY_TAB, queued_keys);
     input.backspace_pressed = frame_key_pressed(app, KEY_BACKSPACE, queued_keys);
@@ -388,12 +392,16 @@ static void load_profile(DemoApp* app) {
     }
 
     SavedSessionState* current = nullptr;
+    int state_version = 1;
     char line[512]{};
     while (std::fgets(line, sizeof(line), file)) {
         char* cmd = std::strtok(line, " \t\r\n");
         if (!cmd || cmd[0] == '#') continue;
 
-        if (std::strcmp(cmd, "player") == 0) {
+        if (std::strcmp(cmd, "OL_STATE") == 0) {
+            const char* version = std::strtok(nullptr, " \t\r\n");
+            if (version) state_version = std::max(1, std::atoi(version));
+        } else if (std::strcmp(cmd, "player") == 0) {
             decode_text_token(std::strtok(nullptr, " \t\r\n"), app->profile.player_name, sizeof(app->profile.player_name));
         } else if (std::strcmp(cmd, "session") == 0) {
             decode_text_token(std::strtok(nullptr, " \t\r\n"), app->profile.session_name, sizeof(app->profile.session_name));
@@ -437,6 +445,49 @@ static void load_profile(DemoApp* app) {
             }
         } else if (std::strcmp(cmd, "end") == 0) {
             current = nullptr;
+        } else if (std::strcmp(cmd, "px") == 0 && current) {
+            const char* values[15]{};
+            bool complete = true;
+            for (const char*& value : values) {
+                value = std::strtok(nullptr, " \t\r\n");
+                if (!value) complete = false;
+            }
+            if (!complete || current->painted_pixels.size() >= max_saved_painted_pixels) continue;
+            SavedPaintPixel pixel{};
+            pixel.chunk = {std::atoi(values[0]), std::atoi(values[1]), std::atoi(values[2])};
+            pixel.local = {std::strtof(values[3], nullptr), std::strtof(values[4], nullptr), std::strtof(values[5], nullptr)};
+            pixel.normal = {std::strtof(values[6], nullptr), std::strtof(values[7], nullptr), std::strtof(values[8], nullptr)};
+            pixel.tangent = {std::strtof(values[9], nullptr), std::strtof(values[10], nullptr), std::strtof(values[11], nullptr)};
+            pixel.color = {
+                static_cast<u8>(clampf(static_cast<float>(std::atoi(values[12])), 0.0f, 255.0f)),
+                static_cast<u8>(clampf(static_cast<float>(std::atoi(values[13])), 0.0f, 255.0f)),
+                static_cast<u8>(clampf(static_cast<float>(std::atoi(values[14])), 0.0f, 255.0f)),
+                255};
+            const char* ou = std::strtok(nullptr, " \t\r\n");
+            const char* ov = std::strtok(nullptr, " \t\r\n");
+            const char* hu = std::strtok(nullptr, " \t\r\n");
+            const char* hv = std::strtok(nullptr, " \t\r\n");
+            const char* sprite_id = std::strtok(nullptr, " \t\r\n");
+            const char* sprite_x = std::strtok(nullptr, " \t\r\n");
+            const char* sprite_y = std::strtok(nullptr, " \t\r\n");
+            const char* mesh_id = std::strtok(nullptr, " \t\r\n");
+            if (ou && ov && hu && hv) {
+                pixel.quad_offset = {std::strtof(ou, nullptr), std::strtof(ov, nullptr)};
+                pixel.quad_half_size = {std::strtof(hu, nullptr), std::strtof(hv, nullptr)};
+            }
+            if (sprite_id && sprite_x && sprite_y) {
+                pixel.sprite_id = static_cast<u32>(std::strtoul(sprite_id, nullptr, 10));
+                pixel.sprite_pixel_x = std::atoi(sprite_x);
+                pixel.sprite_pixel_y = std::atoi(sprite_y);
+            }
+            if (mesh_id) pixel.mesh_id = static_cast<u32>(std::strtoul(mesh_id, nullptr, 10));
+            if (state_version < 2 && !id_valid(pixel.sprite_id)) {
+                WorldPos old_center{0, pixel.chunk, pixel.local};
+                worldpos_add_delta(&old_center, pixel.normal * -0.006f, 16.0f);
+                pixel.chunk = old_center.chunk;
+                pixel.local = old_center.local;
+            }
+            current->painted_pixels.push_back(pixel);
         } else if (std::strcmp(cmd, "p") == 0 && current) {
             const char* peer = std::strtok(nullptr, " \t\r\n");
             const char* cx = std::strtok(nullptr, " \t\r\n");
@@ -503,7 +554,7 @@ static void save_profile(DemoApp* app) {
     if (!file) return;
 
     char encoded[128]{};
-    std::fprintf(file, "OL_STATE 1\n");
+    std::fprintf(file, "OL_STATE 2\n");
     encode_text_token(app->profile.player_name, encoded, sizeof(encoded));
     std::fprintf(file, "player %s\n", encoded);
     encode_text_token(app->profile.session_name, encoded, sizeof(encoded));
@@ -552,6 +603,21 @@ static void save_profile(DemoApp* app) {
                 static_cast<unsigned>(player.color.g),
                 static_cast<unsigned>(player.color.b),
                 encoded_name);
+        }
+        for (const SavedPaintPixel& pixel : session.painted_pixels) {
+            std::fprintf(
+                file,
+                "px %d %d %d %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %u %u %u %.6f %.6f %.6f %.6f %u %d %d %u\n",
+                pixel.chunk.x, pixel.chunk.y, pixel.chunk.z,
+                pixel.local.x, pixel.local.y, pixel.local.z,
+                pixel.normal.x, pixel.normal.y, pixel.normal.z,
+                pixel.tangent.x, pixel.tangent.y, pixel.tangent.z,
+                static_cast<unsigned>(pixel.color.r),
+                static_cast<unsigned>(pixel.color.g),
+                static_cast<unsigned>(pixel.color.b),
+                pixel.quad_offset.x, pixel.quad_offset.y,
+                pixel.quad_half_size.x, pixel.quad_half_size.y,
+                pixel.sprite_id, pixel.sprite_pixel_x, pixel.sprite_pixel_y, pixel.mesh_id);
         }
         std::fprintf(file, "end\n");
     }
@@ -639,6 +705,7 @@ static WorldPos default_player_spawn(const DemoApp* app, u32 dimension_id, float
 static void reset_remote_players(DemoApp* app) {
     app->remote_peer_ids.fill(0);
     app->remote_player_ids.fill(invalid_id);
+    app->paint_sync_sent_peer_ids.fill(0);
 }
 
 static void write_smoke_log(const char* fmt, ...) {
@@ -671,6 +738,7 @@ static u32 add_visual_box(Dimension* dim, u32 dimension_id, u32 cube_geom, const
     mesh.origin = demo_pos(dimension_id, center, dim->chunk_size_m);
     mesh.se3 = MatrixScale(size.x, size.y, size.z);
     mesh.color = color;
+    mesh.texture_id = render_texture_grid;
     mesh.bounds_radius = Vector3Length(size) * 0.5f;
     return dimension_add_mesh(dim, mesh);
 }
@@ -769,6 +837,10 @@ static void add_streamed_box(DemoApp* app, Dimension* dim, StreamedWorldChunk* c
     if (MeshInstance* mesh = arena_get(&dim->meshes, mesh_id)) {
         mesh->lit = lit;
         mesh->draw_edges = draw_edges;
+        if (std::strstr(name, "terrain")) mesh->texture_id = render_texture_grass;
+        else if (std::strstr(name, "roof")) mesh->texture_id = render_texture_roof;
+        else if (std::strstr(name, "wall") || std::strstr(name, "floor")) mesh->texture_id = render_texture_stone;
+        else mesh->texture_id = render_texture_grid;
     }
     record_streamed_mesh(chunk, mesh_id);
 
@@ -965,13 +1037,13 @@ static MeshGeometry make_tunnel_contour_geometry(const char* name) {
     MeshGeometry geometry{};
     std::snprintf(geometry.name, sizeof(geometry.name), "%s", name);
 
-    constexpr float x0 = -1.725f;
-    constexpr float x1 = -1.275f;
-    constexpr float x2 = 1.275f;
-    constexpr float x3 = 1.725f;
-    constexpr float y0 = -0.65f;
-    constexpr float y1 = 0.35f;
-    constexpr float y2 = 0.65f;
+    constexpr float x0 = -2.0f;
+    constexpr float x1 = -1.0f;
+    constexpr float x2 = 1.0f;
+    constexpr float x3 = 2.0f;
+    constexpr float y0 = -1.0f;
+    constexpr float y1 = 0.0f;
+    constexpr float y2 = 1.0f;
     constexpr float z0 = -2.5f;
     constexpr float z1 = 2.5f;
 
@@ -1025,6 +1097,28 @@ static const SavedPlayerState* find_current_session_player_state(const DemoApp* 
         }
     }
     return find_saved_player(session, peer_id);
+}
+
+static void restore_current_session_paint(DemoApp* app, Dimension* dim) {
+    if (!app || !dim) return;
+    const SavedSessionState* session = find_session(&app->profile, app->session_name);
+    if (!session) return;
+    const char* session_world = session->world_name[0] ? session->world_name : world_playground_name;
+    if (std::strcmp(canonical_world_name(session_world), canonical_world_name(app->world_name)) != 0) return;
+    for (const SavedPaintPixel& saved : session->painted_pixels) {
+        PaintedPixel pixel{};
+        pixel.center = {app->dimension_id, saved.chunk, saved.local};
+        pixel.normal = saved.normal;
+        pixel.tangent = saved.tangent;
+        pixel.color = saved.color;
+        pixel.quad_offset = saved.quad_offset;
+        pixel.quad_half_size = saved.quad_half_size;
+        pixel.mesh_id = saved.mesh_id;
+        pixel.sprite_id = saved.sprite_id;
+        pixel.sprite_pixel_x = saved.sprite_pixel_x;
+        pixel.sprite_pixel_y = saved.sprite_pixel_y;
+        dimension_paint_pixel(dim, pixel);
+    }
 }
 
 static WorldPos saved_player_feet_pos(u32 dimension_id, const SavedPlayerState& state) {
@@ -1134,38 +1228,39 @@ static void generate_playground_world(DemoApp* app) {
     MeshGeometry wedge = make_wedge_geometry("wedge", {1.0f, 1.0f, 1.0f});
     const u32 wedge_id = dimension_add_geometry(dim, wedge);
 
-    add_static_box(dim, app->dimension_id, cube_id, "floor", {0.0f, -0.55f, 0.0f}, {40.0f, 1.0f, 40.0f}, {118, 134, 123, 255}, false, false);
-    add_static_box(dim, app->dimension_id, cube_id, "north wall", {0.0f, 1.5f, -18.0f}, {40.0f, 4.0f, 1.0f}, {96, 105, 124, 255}, false, true);
-    add_static_box(dim, app->dimension_id, cube_id, "west wall", {-18.0f, 1.5f, 0.0f}, {1.0f, 4.0f, 40.0f}, {93, 113, 123, 255}, false, true);
-    add_static_box(dim, app->dimension_id, cube_id, "block a", {4.0f, 0.5f, -4.0f}, {2.5f, 2.0f, 2.5f}, {174, 96, 88, 255});
-    add_static_box(dim, app->dimension_id, cube_id, "block b", {-4.0f, 0.25f, -2.0f}, {2.0f, 1.5f, 5.0f}, {96, 145, 112, 255});
-    add_static_box(dim, app->dimension_id, cube_id, "tunnel left", {9.0f, 0.5f, -3.5f}, {0.45f, 1.0f, 5.0f}, {108, 120, 145, 255}, false, false);
-    add_static_box(dim, app->dimension_id, cube_id, "tunnel right", {12.0f, 0.5f, -3.5f}, {0.45f, 1.0f, 5.0f}, {108, 120, 145, 255}, false, false);
-    add_static_box(dim, app->dimension_id, cube_id, "tunnel roof", {10.5f, 1.15f, -3.5f}, {3.45f, 0.30f, 5.0f}, {93, 102, 130, 255}, false, false);
-    add_contour_mesh(dim, app->dimension_id, make_tunnel_contour_geometry("tunnel contours"), "tunnel contours", {10.5f, 0.65f, -3.5f}, 3.2f);
+    add_static_box(dim, app->dimension_id, cube_id, "floor", {0.0f, -0.5f, 0.0f}, {40.0f, 1.0f, 40.0f}, {118, 134, 123, 255}, false, false);
+    add_static_box(dim, app->dimension_id, cube_id, "north wall", {0.0f, 2.0f, -18.5f}, {40.0f, 4.0f, 1.0f}, {96, 105, 124, 255}, false, true);
+    add_static_box(dim, app->dimension_id, cube_id, "west wall", {-18.5f, 2.0f, 0.0f}, {1.0f, 4.0f, 40.0f}, {93, 113, 123, 255}, false, true);
+    add_static_box(dim, app->dimension_id, cube_id, "block a", {4.5f, 1.0f, -4.5f}, {3.0f, 2.0f, 3.0f}, {174, 96, 88, 255});
+    add_static_box(dim, app->dimension_id, cube_id, "block b", {-4.0f, 1.0f, -2.5f}, {2.0f, 2.0f, 5.0f}, {96, 145, 112, 255});
+    add_static_box(dim, app->dimension_id, cube_id, "tunnel left", {8.5f, 0.5f, -3.5f}, {1.0f, 1.0f, 5.0f}, {108, 120, 145, 255}, false, false);
+    add_static_box(dim, app->dimension_id, cube_id, "tunnel right", {11.5f, 0.5f, -3.5f}, {1.0f, 1.0f, 5.0f}, {108, 120, 145, 255}, false, false);
+    add_static_box(dim, app->dimension_id, cube_id, "tunnel roof", {10.0f, 1.5f, -3.5f}, {4.0f, 1.0f, 5.0f}, {93, 102, 130, 255}, false, false);
+    add_contour_mesh(dim, app->dimension_id, make_tunnel_contour_geometry("tunnel contours"), "tunnel contours", {10.0f, 1.0f, -3.5f}, 3.5f);
 
-    add_static_box(dim, app->dimension_id, cube_id, "step 1", {-8.0f, 0.0f, 5.0f}, {3.0f, 1.0f, 3.0f}, {166, 151, 92, 255}, true, false);
-    add_static_box(dim, app->dimension_id, cube_id, "step 2", {-8.0f, 0.5f, 8.0f}, {3.0f, 2.0f, 3.0f}, {174, 160, 101, 255}, true, false);
-    add_static_box(dim, app->dimension_id, cube_id, "step 3", {-8.0f, 1.0f, 11.0f}, {3.0f, 3.0f, 3.0f}, {185, 171, 112, 255}, true, false);
-    add_contour_mesh(dim, app->dimension_id, make_stair_contour_geometry("stair contours"), "stair contours", {-8.0f, 0.0f, 8.0f}, 5.5f);
+    add_static_box(dim, app->dimension_id, cube_id, "step 1", {-8.5f, 0.0f, 5.5f}, {3.0f, 1.0f, 3.0f}, {166, 151, 92, 255}, true, false);
+    add_static_box(dim, app->dimension_id, cube_id, "step 2", {-8.5f, 0.5f, 8.5f}, {3.0f, 2.0f, 3.0f}, {174, 160, 101, 255}, true, false);
+    add_static_box(dim, app->dimension_id, cube_id, "step 3", {-8.5f, 1.0f, 11.5f}, {3.0f, 3.0f, 3.0f}, {185, 171, 112, 255}, true, false);
+    add_contour_mesh(dim, app->dimension_id, make_stair_contour_geometry("stair contours"), "stair contours", {-8.5f, 0.0f, 8.5f}, 5.5f);
 
     MeshInstance ramp{};
     std::snprintf(ramp.name, sizeof(ramp.name), "visual ramp");
     ramp.geometry = wedge_id;
-    ramp.origin = demo_pos(app->dimension_id, {7.0f, 0.5f, 6.0f}, dim->chunk_size_m);
+    ramp.origin = demo_pos(app->dimension_id, {7.5f, 0.5f, 6.5f}, dim->chunk_size_m);
     ramp.se3 = MatrixScale(5.0f, 1.0f, 5.0f);
     ramp.color = {117, 136, 182, 255};
+    ramp.texture_id = render_texture_grid;
     dimension_add_mesh(dim, ramp);
 
     BoxCollider ramp_collider{};
-    ramp_collider.pos = demo_pos(app->dimension_id, {7.0f, 0.363f, 6.024f}, dim->chunk_size_m);
+    ramp_collider.pos = demo_pos(app->dimension_id, {7.5f, 0.363f, 6.524f}, dim->chunk_size_m);
     ramp_collider.half = {2.5f, 0.12f, 2.55f};
     ramp_collider.axis_aligned = false;
     ramp_collider.rotation = QuaternionFromAxisAngle({1.0f, 0.0f, 0.0f}, -std::atan2(1.05f, 5.0f));
     ramp_collider.color = ramp.color;
     physics_add_box(&dim->physics, ramp_collider);
 
-    add_static_box(dim, app->dimension_id, cube_id, "ramp landing", {7.0f, 0.5f, 10.6f}, {5.0f, 1.0f, 4.0f}, {107, 126, 168, 255}, false, true);
+    add_static_box(dim, app->dimension_id, cube_id, "ramp landing", {7.5f, 0.5f, 11.0f}, {5.0f, 1.0f, 4.0f}, {107, 126, 168, 255}, false, true);
 
     SpriteInstance sprite{};
     sprite.size = {1.2f, 1.2f};
@@ -1204,6 +1299,7 @@ static void generate_playground_world(DemoApp* app) {
     blue.intensity = 0.9f;
     dimension_add_light(dim, blue);
 
+    restore_current_session_paint(app, dim);
     add_local_player_to_generated_world(app, dim);
 }
 
@@ -1238,6 +1334,7 @@ static void generate_hills_world(DemoApp* app) {
     sun.intensity = 1.05f;
     dimension_add_light(dim, sun);
 
+    restore_current_session_paint(app, dim);
     add_local_player_to_generated_world(app, dim);
 }
 
@@ -1337,6 +1434,9 @@ static void enter_game(DemoApp* app) {
     app->paused = false;
     app->mouse_captured = true;
     app->blocking_screen_cursor_released = false;
+    app->joining_screen_active = false;
+    app->joining_restore_applied = false;
+    app->joining_paint_history_complete = false;
     app->dragged_pause_control = pause_control_none;
     app->sessions_open = false;
     app->worlds_open = false;
@@ -1359,6 +1459,10 @@ static void join_game(DemoApp* app) {
     net_join_from_clipboard(&app->net);
     if (app->net.pending || app->net.in_lobby) {
         enter_game(app);
+        app->joining_screen_active = true;
+        app->joining_restore_applied = false;
+        app->joining_paint_history_complete = false;
+        app->joining_started = GetTime();
     }
 }
 
@@ -1523,7 +1627,7 @@ static PlayerEntity* local_player(DemoApp* app, Dimension* dim) {
 }
 
 static void collect_input(DemoApp* app, PlayerEntity* player) {
-    if (!app->mouse_captured && app->frame_input.mouse_left_pressed) {
+    if (!app->mouse_captured && (app->frame_input.mouse_left_pressed || app->frame_input.mouse_right_down)) {
         app->mouse_captured = true;
         DisableCursor();
     }
@@ -1613,8 +1717,84 @@ static bool ray_hits_player_cylinder(Ray ray, Vector3 bottom, float height, floa
     return true;
 }
 
-static float raycast_world(DemoApp* app, Dimension* dim, const PlayerEntity* local, WorldPos ray_start, Vector3 ray_dir, float max_dist) {
-    if (!dim) return max_dist;
+struct WorldRayHit {
+    float distance = 0.0f;
+    u32 mesh_id = invalid_id;
+    Vector3 point{};
+    Vector3 normal = {0.0f, 1.0f, 0.0f};
+    Vector3 mesh_origin{};
+    u32 sprite_id = invalid_id;
+    i32 sprite_pixel_x = 0;
+    i32 sprite_pixel_y = 0;
+};
+
+static constexpr float paint_max_ray_dist_m = 10.0f;
+
+static const Texture2D* demo_texture_handle(const DemoApp* app, u32 texture_id) {
+    if (texture_id == render_texture_life) return &app->renderer.life_texture;
+    if (texture_id == render_texture_cross) return &app->renderer.cross_texture;
+    if (texture_id == render_texture_grid) return &app->renderer.grid_texture;
+    if (texture_id == render_texture_grass) return &app->renderer.grass_texture;
+    if (texture_id == render_texture_stone) return &app->renderer.stone_texture;
+    if (texture_id == render_texture_roof) return &app->renderer.roof_texture;
+    return nullptr;
+}
+
+static Vector2 demo_texture_pixel_size(const DemoApp* app, u32 texture_id) {
+    const Texture2D* texture = demo_texture_handle(app, texture_id);
+    if (texture && IsTextureValid(*texture)) return {static_cast<float>(texture->width), static_cast<float>(texture->height)};
+    return {16.0f, 16.0f};
+}
+
+static bool demo_texture_pixel_is_opaque(const DemoApp* app, u32 texture_id, i32 x, i32 y) {
+    const Texture2D* texture = demo_texture_handle(app, texture_id);
+    if (!texture || !IsTextureValid(*texture)) return true;
+    if (x < 0 || y < 0 || x >= texture->width || y >= texture->height) return false;
+    const std::vector<u8>* alpha = nullptr;
+    if (texture_id == render_texture_life) alpha = &app->renderer.life_alpha;
+    else if (texture_id == render_texture_cross) alpha = &app->renderer.cross_alpha;
+    if (!alpha || alpha->size() != static_cast<size_t>(texture->width) * static_cast<size_t>(texture->height)) return true;
+    return (*alpha)[static_cast<size_t>(y) * static_cast<size_t>(texture->width) + static_cast<size_t>(x)] >= 128;
+}
+
+struct SpriteRayQuad {
+    Vector3 center{};
+    Vector3 right{};
+    Vector3 up{};
+    float width = 1.0f;
+    float height = 1.0f;
+};
+
+static SpriteRayQuad make_sprite_ray_quad(const DemoApp* app, const Dimension* dim, const SpriteInstance* sprite, Vector3 center, Vector3 camera_forward) {
+    SpriteRayQuad quad{};
+    quad.center = center;
+    quad.right = {1.0f, 0.0f, 0.0f};
+    quad.up = {0.0f, 1.0f, 0.0f};
+    if (sprite->billboard == billboard_full_3d) {
+        const Vector3 forward = safe_norm(center * -1.0f, camera_forward * -1.0f);
+        quad.right = safe_norm(Vector3CrossProduct({0.0f, 1.0f, 0.0f}, forward), {1.0f, 0.0f, 0.0f});
+        quad.up = safe_norm(Vector3CrossProduct(forward, quad.right), {0.0f, 1.0f, 0.0f});
+    } else if (sprite->billboard == billboard_vertical) {
+        Vector3 to_camera = center * -1.0f;
+        to_camera.y = 0.0f;
+        const Vector3 forward = safe_norm(to_camera, {0.0f, 0.0f, 1.0f});
+        quad.right = safe_norm(Vector3CrossProduct({0.0f, 1.0f, 0.0f}, forward), {1.0f, 0.0f, 0.0f});
+    } else {
+        const Matrix basis = matrix_no_translation(sprite->se3);
+        quad.right = safe_norm(Vector3Transform({1.0f, 0.0f, 0.0f}, basis), {1.0f, 0.0f, 0.0f});
+        quad.up = safe_norm(Vector3Transform({0.0f, 1.0f, 0.0f}, basis), {0.0f, 1.0f, 0.0f});
+    }
+    const Vector2 pixels = demo_texture_pixel_size(app, sprite->texture_id);
+    const float ppm = fmaxf(dim->pixels_per_meter, 1.0f);
+    quad.width = pixels.x / ppm * sprite->size.x;
+    quad.height = pixels.y / ppm * sprite->size.y;
+    return quad;
+}
+
+static WorldRayHit raycast_world(DemoApp* app, Dimension* dim, const PlayerEntity* local, WorldPos ray_start, Vector3 ray_dir, float max_dist) {
+    WorldRayHit hit{};
+    hit.distance = max_dist;
+    if (!dim) return hit;
 
     Ray ray{};
     ray.position = {};
@@ -1640,8 +1820,44 @@ static float raycast_world(DemoApp* app, Dimension* dim, const PlayerEntity* loc
             float t = 0.0f;
             if (ray_intersects_triangle(ray, transformed[tri.a], transformed[tri.b], transformed[tri.c], best_t, &t)) {
                 best_t = t;
+                hit.distance = t;
+                hit.mesh_id = arena_id_at_slot(&dim->meshes, slot);
+                hit.point = ray.direction * t;
+                hit.normal = safe_norm(Vector3CrossProduct(transformed[tri.b] - transformed[tri.a], transformed[tri.c] - transformed[tri.a]));
+                if (Vector3DotProduct(hit.normal, ray.direction) > 0.0f) hit.normal = hit.normal * -1.0f;
+                hit.mesh_origin = origin;
             }
         }
+    }
+
+    for (u32 slot = 0; slot < dim->sprites.count; ++slot) {
+        const SpriteInstance* sprite = &dim->sprites.data[slot];
+        if (!sprite->visible) continue;
+        const Vector3 center = world_delta_meters(sprite->origin, ray_start, dim->chunk_size_m);
+        const SpriteRayQuad quad = make_sprite_ray_quad(app, dim, sprite, center, ray.direction);
+        const Vector3 half_right = quad.right * (quad.width * 0.5f);
+        const Vector3 half_up = quad.up * (quad.height * 0.5f);
+        const Vector3 a = center - half_right - half_up;
+        const Vector3 b = center + half_right - half_up;
+        const Vector3 c = center + half_right + half_up;
+        const Vector3 d = center - half_right + half_up;
+        float t = 0.0f;
+        if (!ray_intersects_triangle(ray, a, b, c, best_t, &t) && !ray_intersects_triangle(ray, a, c, d, best_t, &t)) continue;
+        const Vector3 sprite_hit_point = ray.direction * t;
+        const Vector3 local = sprite_hit_point - center;
+        const Vector2 pixels = demo_texture_pixel_size(app, sprite->texture_id);
+        const float u = clampf(Vector3DotProduct(local, quad.right) / quad.width + 0.5f, 0.0f, 0.999999f);
+        const float v = clampf(0.5f - Vector3DotProduct(local, quad.up) / quad.height, 0.0f, 0.999999f);
+        const i32 pixel_x = static_cast<i32>(std::floor(u * pixels.x));
+        const i32 pixel_y = static_cast<i32>(std::floor(v * pixels.y));
+        if (!demo_texture_pixel_is_opaque(app, sprite->texture_id, pixel_x, pixel_y)) continue;
+        best_t = t;
+        hit.distance = t;
+        hit.mesh_id = invalid_id;
+        hit.sprite_id = arena_id_at_slot(&dim->sprites, slot);
+        hit.sprite_pixel_x = pixel_x;
+        hit.sprite_pixel_y = pixel_y;
+        hit.point = sprite_hit_point;
     }
 
     for (u32 slot = 0; slot < dim->players.count; ++slot) {
@@ -1656,27 +1872,276 @@ static float raycast_world(DemoApp* app, Dimension* dim, const PlayerEntity* loc
         float t = 0.0f;
         if (ray_hits_player_cylinder(ray, bottom, height, radius, best_t, &t)) {
             best_t = t;
+            hit.distance = t;
+            hit.mesh_id = invalid_id;
         }
     }
 
-    return best_t;
+    return hit;
+}
+
+static Vector3 paint_face_tangent(Vector3 normal) {
+    const Vector3 abs_n = {std::fabs(normal.x), std::fabs(normal.y), std::fabs(normal.z)};
+    if (abs_n.y >= abs_n.x && abs_n.y >= abs_n.z) return {1.0f, 0.0f, 0.0f};
+    if (abs_n.x >= abs_n.z) return {0.0f, 0.0f, normal.x >= 0.0f ? 1.0f : -1.0f};
+    return {normal.z >= 0.0f ? -1.0f : 1.0f, 0.0f, 0.0f};
+}
+
+static bool paint_targeted_pixel(DemoApp* app, Dimension* dim, WorldPos ray_start, const WorldRayHit& hit, Color color) {
+    if (!app || !dim || (!id_valid(hit.mesh_id) && !id_valid(hit.sprite_id))) return false;
+    if (id_valid(hit.sprite_id)) {
+        const SpriteInstance* sprite = arena_get(&dim->sprites, hit.sprite_id);
+        if (!sprite) return false;
+        if (app->last_drag_pixel_valid && app->last_drag_sprite_id == hit.sprite_id &&
+            app->last_drag_sprite_x == hit.sprite_pixel_x && app->last_drag_sprite_y == hit.sprite_pixel_y) return false;
+
+        const int start_x = app->last_drag_pixel_valid && app->last_drag_sprite_id == hit.sprite_id
+            ? app->last_drag_sprite_x : hit.sprite_pixel_x;
+        const int start_y = app->last_drag_pixel_valid && app->last_drag_sprite_id == hit.sprite_id
+            ? app->last_drag_sprite_y : hit.sprite_pixel_y;
+        const int dx = hit.sprite_pixel_x - start_x;
+        const int dy = hit.sprite_pixel_y - start_y;
+        const int steps = std::max(std::abs(dx), std::abs(dy));
+        bool painted = false;
+        for (int i = 1; i <= steps; ++i) {
+            PaintedPixel pixel{};
+            pixel.center = sprite->origin;
+            pixel.sprite_id = hit.sprite_id;
+            pixel.sprite_pixel_x = start_x + static_cast<int>(std::round(static_cast<float>(dx * i) / static_cast<float>(steps)));
+            pixel.sprite_pixel_y = start_y + static_cast<int>(std::round(static_cast<float>(dy * i) / static_cast<float>(steps)));
+            pixel.color = color;
+            if (!dimension_paint_pixel(dim, pixel)) continue;
+            NetPaintPixel net_pixel{};
+            net_pixel.chunk = pixel.center.chunk;
+            net_pixel.local = pixel.center.local;
+            net_pixel.color = color;
+            net_pixel.sprite_id = pixel.sprite_id;
+            net_pixel.sprite_pixel_x = pixel.sprite_pixel_x;
+            net_pixel.sprite_pixel_y = pixel.sprite_pixel_y;
+            net_send_paint_pixel(&app->net, net_pixel);
+            painted = true;
+        }
+        if (steps == 0) {
+            PaintedPixel pixel{};
+            pixel.center = sprite->origin;
+            pixel.sprite_id = hit.sprite_id;
+            pixel.sprite_pixel_x = hit.sprite_pixel_x;
+            pixel.sprite_pixel_y = hit.sprite_pixel_y;
+            pixel.color = color;
+            painted = dimension_paint_pixel(dim, pixel);
+            if (painted) {
+                NetPaintPixel net_pixel{};
+                net_pixel.chunk = pixel.center.chunk;
+                net_pixel.local = pixel.center.local;
+                net_pixel.color = color;
+                net_pixel.sprite_id = pixel.sprite_id;
+                net_pixel.sprite_pixel_x = pixel.sprite_pixel_x;
+                net_pixel.sprite_pixel_y = pixel.sprite_pixel_y;
+                net_send_paint_pixel(&app->net, net_pixel);
+            }
+        }
+        if (!painted) return false;
+        app->last_drag_pixel_valid = true;
+        app->last_drag_sprite_id = hit.sprite_id;
+        app->last_drag_sprite_x = hit.sprite_pixel_x;
+        app->last_drag_sprite_y = hit.sprite_pixel_y;
+        mark_profile_dirty(app);
+        return true;
+    }
+    const float ppm = fmaxf(dim->pixels_per_meter, 1.0f);
+    const Vector3 tangent = paint_face_tangent(hit.normal);
+    const Vector3 bitangent = safe_norm(Vector3CrossProduct(hit.normal, tangent), {0.0f, 0.0f, 1.0f});
+    const Vector3 from_origin = hit.point - hit.mesh_origin;
+    const float u = Vector3DotProduct(from_origin, tangent);
+    const float v = Vector3DotProduct(from_origin, bitangent);
+    const float pixel_u = (std::floor(u * ppm) + 0.5f) / ppm;
+    const float pixel_v = (std::floor(v * ppm) + 0.5f) / ppm;
+    Vector3 center = hit.point + tangent * (pixel_u - u) + bitangent * (pixel_v - v);
+
+    float face_min_u = std::numeric_limits<float>::max();
+    float face_max_u = -std::numeric_limits<float>::max();
+    float face_min_v = std::numeric_limits<float>::max();
+    float face_max_v = -std::numeric_limits<float>::max();
+    if (const MeshInstance* mesh = arena_get(&dim->meshes, hit.mesh_id)) {
+        if (const MeshGeometry* geometry = arena_get(&dim->geometries, mesh->geometry)) {
+            const Matrix basis = matrix_no_translation(mesh->se3);
+            for (u32 i = 0; i < geometry->vertex_count; ++i) {
+                const Vector3 vertex = Vector3Transform(geometry->vertices[i], basis) + hit.mesh_origin;
+                if (std::fabs(Vector3DotProduct(vertex - hit.point, hit.normal)) > 0.01f) continue;
+                const Vector3 vertex_from_origin = vertex - hit.mesh_origin;
+                const float vertex_u = Vector3DotProduct(vertex_from_origin, tangent);
+                const float vertex_v = Vector3DotProduct(vertex_from_origin, bitangent);
+                face_min_u = fminf(face_min_u, vertex_u);
+                face_max_u = fmaxf(face_max_u, vertex_u);
+                face_min_v = fminf(face_min_v, vertex_v);
+                face_max_v = fmaxf(face_max_v, vertex_v);
+            }
+        }
+    }
+
+    const WorldPos pixel_center = worldpos_offset(ray_start, center, dim->chunk_size_m);
+    if (app->last_drag_pixel_valid && Vector3DotProduct(app->last_drag_pixel_normal, hit.normal) > 0.999f &&
+        safe_len(world_delta_meters(app->last_drag_pixel_center, pixel_center, dim->chunk_size_m)) < 0.25f / ppm) {
+        return false;
+    }
+
+    auto commit_pixel = [&](WorldPos center_pos) {
+        PaintedPixel pixel{};
+        pixel.mesh_id = hit.mesh_id;
+        pixel.center = center_pos;
+        pixel.normal = hit.normal;
+        pixel.tangent = tangent;
+        pixel.color = color;
+        const Vector3 center_rel = world_delta_meters(center_pos, ray_start, dim->chunk_size_m);
+        const Vector3 center_from_origin = center_rel - hit.mesh_origin;
+        const float center_u = Vector3DotProduct(center_from_origin, tangent);
+        const float center_v = Vector3DotProduct(center_from_origin, bitangent);
+        const float texel_half = 0.5f / ppm;
+        const float clipped_min_u = fmaxf(center_u - texel_half, face_min_u);
+        const float clipped_max_u = fminf(center_u + texel_half, face_max_u);
+        const float clipped_min_v = fmaxf(center_v - texel_half, face_min_v);
+        const float clipped_max_v = fminf(center_v + texel_half, face_max_v);
+        if (clipped_max_u <= clipped_min_u || clipped_max_v <= clipped_min_v) return false;
+        pixel.quad_offset = {
+            (clipped_min_u + clipped_max_u) * 0.5f - center_u,
+            (clipped_min_v + clipped_max_v) * 0.5f - center_v};
+        pixel.quad_half_size = {
+            (clipped_max_u - clipped_min_u) * 0.5f,
+            (clipped_max_v - clipped_min_v) * 0.5f};
+        if (!dimension_paint_pixel(dim, pixel)) return false;
+        NetPaintPixel net_pixel{};
+        net_pixel.chunk = pixel.center.chunk;
+        net_pixel.local = pixel.center.local;
+        net_pixel.normal = pixel.normal;
+        net_pixel.tangent = pixel.tangent;
+        net_pixel.color = pixel.color;
+        net_pixel.quad_offset = pixel.quad_offset;
+        net_pixel.quad_half_size = pixel.quad_half_size;
+        net_pixel.mesh_id = pixel.mesh_id;
+        net_send_paint_pixel(&app->net, net_pixel);
+        return true;
+    };
+
+    bool painted = false;
+    if (app->last_drag_pixel_valid && Vector3DotProduct(app->last_drag_pixel_normal, hit.normal) > 0.999f) {
+        const Vector3 delta = world_delta_meters(pixel_center, app->last_drag_pixel_center, dim->chunk_size_m);
+        const int du = static_cast<int>(std::round(Vector3DotProduct(delta, tangent) * ppm));
+        const int dv = static_cast<int>(std::round(Vector3DotProduct(delta, bitangent) * ppm));
+        const int steps = std::max(std::abs(du), std::abs(dv));
+        if (std::fabs(Vector3DotProduct(delta, hit.normal)) < 0.02f && steps > 0 && steps <= 256) {
+            for (int i = 1; i <= steps; ++i) {
+                const int iu = static_cast<int>(std::round(static_cast<float>(du * i) / static_cast<float>(steps)));
+                const int iv = static_cast<int>(std::round(static_cast<float>(dv * i) / static_cast<float>(steps)));
+                const WorldPos stroke_pixel = worldpos_offset(
+                    app->last_drag_pixel_center,
+                    tangent * (static_cast<float>(iu) / ppm) + bitangent * (static_cast<float>(iv) / ppm),
+                    dim->chunk_size_m);
+                painted = commit_pixel(stroke_pixel) || painted;
+            }
+        }
+    }
+    if (!painted) painted = commit_pixel(pixel_center);
+    if (!painted) return false;
+    app->last_drag_pixel_valid = true;
+    app->last_drag_sprite_id = invalid_id;
+    app->last_drag_pixel_center = pixel_center;
+    app->last_drag_pixel_normal = hit.normal;
+    mark_profile_dirty(app);
+    return true;
+}
+
+static void apply_received_paint_pixels(DemoApp* app, Dimension* dim) {
+    NetPaintPixel received{};
+    while (app && dim && net_take_paint_pixel(&app->net, &received)) {
+        if (received.erase_radius_pixels < 0.0f) {
+            app->joining_paint_history_complete = true;
+            continue;
+        }
+        PaintedPixel pixel{};
+        pixel.center = {app->dimension_id, received.chunk, received.local};
+        pixel.normal = received.normal;
+        pixel.tangent = received.tangent;
+        pixel.color = received.color;
+        pixel.quad_offset = received.quad_offset;
+        pixel.quad_half_size = received.quad_half_size;
+        pixel.mesh_id = received.mesh_id;
+        pixel.sprite_id = received.sprite_id;
+        pixel.sprite_pixel_x = received.sprite_pixel_x;
+        pixel.sprite_pixel_y = received.sprite_pixel_y;
+        if (received.erase_radius_pixels > 0.0f) dimension_erase_pixels(dim, pixel, received.erase_radius_pixels);
+        else dimension_paint_pixel(dim, pixel);
+    }
+}
+
+static bool erase_targeted_pixels(DemoApp* app, Dimension* dim, WorldPos ray_start, const WorldRayHit& hit) {
+    if (!app || !dim || (!id_valid(hit.mesh_id) && !id_valid(hit.sprite_id))) return false;
+    PaintedPixel target{};
+    target.center = worldpos_offset(ray_start, hit.point, dim->chunk_size_m);
+    target.normal = hit.normal;
+    target.mesh_id = hit.mesh_id;
+    target.sprite_id = hit.sprite_id;
+    target.sprite_pixel_x = hit.sprite_pixel_x;
+    target.sprite_pixel_y = hit.sprite_pixel_y;
+    if (id_valid(hit.sprite_id)) {
+        if (const SpriteInstance* sprite = arena_get(&dim->sprites, hit.sprite_id)) target.center = sprite->origin;
+    }
+    constexpr float erase_radius_pixels = 2.5f;
+    const u32 removed = dimension_erase_pixels(dim, target, erase_radius_pixels);
+    NetPaintPixel operation{};
+    operation.chunk = target.center.chunk;
+    operation.local = target.center.local;
+    operation.normal = target.normal;
+    operation.mesh_id = target.mesh_id;
+    operation.sprite_id = target.sprite_id;
+    operation.sprite_pixel_x = target.sprite_pixel_x;
+    operation.sprite_pixel_y = target.sprite_pixel_y;
+    operation.erase_radius_pixels = erase_radius_pixels;
+    net_send_paint_pixel(&app->net, operation);
+    if (removed > 0) mark_profile_dirty(app);
+    return removed > 0;
+}
+
+bool demo_erase_at_view(DemoApp* app, const CameraView& view) {
+    if (!app) return false;
+    Dimension* dim = world_get_dimension(&app->world, app->dimension_id);
+    PlayerEntity* player = dim ? local_player(app, dim) : nullptr;
+    if (!dim || !player) return false;
+    const WorldPos ray_start = worldpos_offset(view.anchor, {0.0f, view.eye_height, 0.0f}, dim->chunk_size_m);
+    const Vector3 ray_dir = forward_from_angles(view.yaw, view.pitch);
+    const WorldRayHit hit = raycast_world(app, dim, player, ray_start, ray_dir, paint_max_ray_dist_m);
+    return erase_targeted_pixels(app, dim, ray_start, hit);
+}
+
+bool demo_paint_at_view(DemoApp* app, const CameraView& view, Color color) {
+    if (!app) return false;
+    Dimension* dim = world_get_dimension(&app->world, app->dimension_id);
+    PlayerEntity* player = dim ? local_player(app, dim) : nullptr;
+    if (!dim || !player) return false;
+    const WorldPos ray_start = worldpos_offset(view.anchor, {0.0f, view.eye_height, 0.0f}, dim->chunk_size_m);
+    const Vector3 ray_dir = forward_from_angles(view.yaw, view.pitch);
+    const WorldRayHit hit = raycast_world(app, dim, player, ray_start, ray_dir, paint_max_ray_dist_m);
+    return paint_targeted_pixel(app, dim, ray_start, hit, color);
 }
 
 static void update_player_aim_ray(DemoApp* app, Dimension* dim, PlayerEntity* player) {
     if (!app || !dim || !player) return;
 
-    player->aim_ray_active = app->mouse_captured && app->frame_input.mouse_left_down;
-    if (!player->aim_ray_active) return;
+    player->aim_ray_active = app->mouse_captured && (app->frame_input.mouse_left_down || app->frame_input.mouse_right_down);
+    if (!player->aim_ray_active) {
+        app->last_drag_pixel_valid = false;
+        return;
+    }
 
     const CameraView view = make_player_camera_view(app, dim, player);
     const WorldPos ray_start = worldpos_offset(view.anchor, {0.0f, view.eye_height, 0.0f}, dim->chunk_size_m);
     const Vector3 ray_dir = forward_from_angles(view.yaw, view.pitch);
-    constexpr float max_ray_dist = 64.0f;
-    const float hit_t = raycast_world(app, dim, player, ray_start, ray_dir, max_ray_dist);
+    const WorldRayHit hit = raycast_world(app, dim, player, ray_start, ray_dir, paint_max_ray_dist_m);
 
     player->aim_ray_start = ray_start;
-    player->aim_ray_end = worldpos_offset(ray_start, ray_dir * hit_t, dim->chunk_size_m);
+    player->aim_ray_end = worldpos_offset(ray_start, ray_dir * hit.distance, dim->chunk_size_m);
     canonicalize(&player->aim_ray_end, dim->chunk_size_m);
+    if (app->frame_input.mouse_right_down) erase_targeted_pixels(app, dim, ray_start, hit);
+    else paint_targeted_pixel(app, dim, ray_start, hit, player->color);
 }
 
 static void fixed_update(DemoApp* app, Dimension* dim, float dt) {
@@ -1771,6 +2236,25 @@ static void record_current_world_state(DemoApp* app) {
     SavedSessionState* session = upsert_session(&app->profile, app->session_name, app->world_name);
     if (!session) return;
 
+    session->painted_pixels.clear();
+    session->painted_pixels.reserve(dim->painted_pixels.size());
+    for (u32 i = 0; i < dim->painted_pixels.size(); ++i) {
+        const PaintedPixel& pixel = dim->painted_pixels[i];
+        SavedPaintPixel saved{};
+        saved.chunk = pixel.center.chunk;
+        saved.local = pixel.center.local;
+        saved.normal = pixel.normal;
+        saved.tangent = pixel.tangent;
+        saved.color = pixel.color;
+        saved.quad_offset = pixel.quad_offset;
+        saved.quad_half_size = pixel.quad_half_size;
+        saved.mesh_id = pixel.mesh_id;
+        saved.sprite_id = pixel.sprite_id;
+        saved.sprite_pixel_x = pixel.sprite_pixel_x;
+        saved.sprite_pixel_y = pixel.sprite_pixel_y;
+        session->painted_pixels.push_back(saved);
+    }
+
     NetPlayerState local = make_net_player_state(app, dim, player);
     local.peer_id = local_player_peer_id(app);
     upsert_player_state(session, saved_state_from_net(local));
@@ -1842,10 +2326,56 @@ static void forget_restore_sent(DemoApp* app, u64 peer_id) {
 static void send_saved_restore_if_needed(DemoApp* app, u64 peer_id) {
     if (!app->net.lobby_owner || !peer_id || restore_already_sent(app, peer_id)) return;
     const SavedPlayerState* saved = find_current_session_player_state(app, peer_id);
-    if (!saved) return;
-
-    net_send_player_restore(&app->net, peer_id, net_state_from_saved(*saved, app->dimension_id));
+    NetPlayerState restore{};
+    if (saved) {
+        restore = net_state_from_saved(*saved, app->dimension_id);
+    } else {
+        bool found_current = false;
+        for (u32 i = 0; i < app->net.peer_count; ++i) {
+            if (app->net.remote_player_valid[i] && app->net.remote_players[i].peer_id == peer_id) {
+                restore = app->net.remote_players[i];
+                found_current = true;
+                break;
+            }
+        }
+        if (!found_current) return;
+    }
+    net_send_player_restore(&app->net, peer_id, restore);
     remember_restore_sent(app, peer_id);
+}
+
+static bool paint_history_sent(const DemoApp* app, u64 peer_id) {
+    for (u64 sent : app->paint_sync_sent_peer_ids) if (sent == peer_id) return true;
+    return false;
+}
+
+static void send_paint_history_if_needed(DemoApp* app, const Dimension* dim, u64 peer_id) {
+    if (!app || !dim || !app->net.lobby_owner || !peer_id || paint_history_sent(app, peer_id)) return;
+    for (u32 i = 0; i < dim->painted_pixels.size(); ++i) {
+        const PaintedPixel& pixel = dim->painted_pixels[i];
+        NetPaintPixel net_pixel{};
+        net_pixel.chunk = pixel.center.chunk;
+        net_pixel.local = pixel.center.local;
+        net_pixel.normal = pixel.normal;
+        net_pixel.tangent = pixel.tangent;
+        net_pixel.color = pixel.color;
+        net_pixel.quad_offset = pixel.quad_offset;
+        net_pixel.quad_half_size = pixel.quad_half_size;
+        net_pixel.mesh_id = pixel.mesh_id;
+        net_pixel.sprite_id = pixel.sprite_id;
+        net_pixel.sprite_pixel_x = pixel.sprite_pixel_x;
+        net_pixel.sprite_pixel_y = pixel.sprite_pixel_y;
+        net_send_paint_pixel(&app->net, net_pixel);
+    }
+    NetPaintPixel complete{};
+    complete.erase_radius_pixels = -1.0f;
+    net_send_paint_pixel(&app->net, complete);
+    for (u64& sent : app->paint_sync_sent_peer_ids) {
+        if (sent == 0) {
+            sent = peer_id;
+            break;
+        }
+    }
 }
 
 static bool net_peer_present(const NetSession* net, u64 peer_id) {
@@ -1909,6 +2439,7 @@ static void sync_remote_players(DemoApp* app, Dimension* dim) {
             remove_remote_player(dim, app->remote_player_ids[slot]);
         }
         forget_restore_sent(app, peer_id);
+        for (u64& sent : app->paint_sync_sent_peer_ids) if (sent == peer_id) sent = 0;
         app->remote_peer_ids[slot] = 0;
         app->remote_player_ids[slot] = invalid_id;
     }
@@ -1962,6 +2493,7 @@ static void sync_remote_players(DemoApp* app, Dimension* dim) {
             apply_saved_player_state(dim, app->dimension_id, remote, *saved, true);
         }
         send_saved_restore_if_needed(app, state.peer_id);
+        send_paint_history_if_needed(app, dim, state.peer_id);
     }
 }
 
@@ -1993,6 +2525,7 @@ static void exit_to_first_menu(DemoApp* app) {
     app->paused = false;
     app->mouse_captured = false;
     app->blocking_screen_cursor_released = false;
+    app->joining_screen_active = false;
     app->input = {};
     app->fixed_accum = 0.0f;
     app->dragged_pause_control = pause_control_none;
@@ -2111,18 +2644,24 @@ static bool update_host_left_screen(DemoApp* app) {
 }
 
 static bool update_joining_screen(DemoApp* app, Dimension* dim, PlayerEntity* player) {
-    if (!(app->net.mode == net_client && app->net.pending)) return false;
+    if (!(app->net.mode == net_client && app->joining_screen_active)) return false;
 
     release_cursor_for_blocking_screen(app);
 
-    net_update(&app->net);
-    if (app->net.in_lobby) {
-        sync_session_from_network(app, dim, player);
-        app->mouse_captured = true;
-        app->blocking_screen_cursor_released = false;
-        DisableCursor();
+    update_network_state(app, dim, player);
+    dim = world_get_dimension(&app->world, app->dimension_id);
+    player = dim ? local_player(app, dim) : nullptr;
+    if (dim) apply_received_paint_pixels(app, dim);
+    if (app->net.in_lobby && dim && player && app->joining_restore_applied && app->joining_paint_history_complete) {
+        update_landscape_streaming(app, dim, player);
+        if (GetTime() - app->joining_started >= 0.35) {
+            app->joining_screen_active = false;
+            app->mouse_captured = true;
+            app->blocking_screen_cursor_released = false;
+            DisableCursor();
+            return false;
+        }
     }
-
     draw_blocking_status_screen(app, "Joining", app->net.status, false);
     return true;
 }
@@ -2257,6 +2796,7 @@ static bool update_network_state(DemoApp* app, Dimension* dim, PlayerEntity* pla
     NetPlayerState restore{};
     if (net_take_player_restore(&app->net, &restore)) {
         apply_net_player_state_to_local(app, dim, player, restore);
+        app->joining_restore_applied = true;
     }
     sync_remote_players(app, dim);
     record_current_world_state(app);
@@ -2339,6 +2879,7 @@ static void update_game(DemoApp* app) {
         player = local_player(app, dim);
         if (!dim || !player) return;
     }
+    apply_received_paint_pixels(app, dim);
     if (update_host_left_screen(app)) return;
 
     draw_game_scene(app, dim, player, true, true);
