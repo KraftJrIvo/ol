@@ -36,6 +36,28 @@ static bool cylinder_overlaps_box(const BoxCollider* box, Vector3 feet_rel, floa
            cylinder_overlaps_box_y(box, feet_rel, height);
 }
 
+static bool player_deeply_penetrates_axis_aligned_wall(const Dimension* dim, const PlayerEntity* player, WorldPos feet, bool allow_step) {
+    for (u32 i = 0; i < dim->physics.boxes.count; ++i) {
+        const BoxCollider* box = &dim->physics.boxes.data[i];
+        if (!box->axis_aligned) continue;
+        const Vector3 rel = world_delta_meters(feet, box->pos, dim->chunk_size_m);
+        const float step_delta = box->half.y - rel.y;
+        if (allow_step && step_delta >= -0.06f && step_delta <= player_step_up_m) continue;
+        constexpr float side_eps = 0.02f;
+        const bool overlaps_blocking_side_height = rel.y < box->half.y - side_eps &&
+            rel.y + player->current_height > -box->half.y + side_eps;
+        const float closest_x = clampf(rel.x, -box->half.x, box->half.x);
+        const float closest_z = clampf(rel.z, -box->half.z, box->half.z);
+        const float dx = rel.x - closest_x;
+        const float dz = rel.z - closest_z;
+        const float deep_radius = fmaxf(0.0f, player->body_radius - 0.05f);
+        if (overlaps_blocking_side_height && dx * dx + dz * dz < deep_radius * deep_radius) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool box_near_feet_xz(const Dimension* dim, const BoxCollider* box, WorldPos feet, float radius, float margin = 0.75f) {
     const Vector3 rel = world_delta_meters(feet, box->pos, dim->chunk_size_m);
     return std::fabs(rel.x) <= box->half.x + radius + margin &&
@@ -556,16 +578,21 @@ void player_controller_step(Dimension* dim, PlayerEntity* player, const PlayerCo
     if (!dim || !player || dt <= 0.0f) return;
 
     WorldPos feet = player_feet_from_bottom(dim, player);
-    const bool grounded_before = player->on_ground || has_ground_below(dim, player, feet);
+    const bool grounded_before = player->on_ground || (player->velocity.y <= 0.0f && has_ground_below(dim, player, feet));
 
     const float old_height = player->current_height;
     float target_height = input.crouch ? player_crouch_height_m : player_stand_height_m;
-    if (target_height > old_height && !player_can_use_height(dim, player, feet, target_height)) {
-        target_height = old_height;
+    WorldPos resized_feet = feet;
+    if (!grounded_before && std::fabs(target_height - old_height) > 0.0001f) {
+        worldpos_add_delta(&resized_feet, {0.0f, old_height - target_height, 0.0f}, dim->chunk_size_m);
     }
-    if (!grounded_before && target_height < old_height) {
+    if (target_height > old_height && !player_can_use_height(dim, player, resized_feet, target_height)) {
+        target_height = old_height;
+        resized_feet = feet;
+    }
+    if (!grounded_before && std::fabs(target_height - old_height) > 0.0001f) {
         const float feet_delta = old_height - target_height;
-        worldpos_add_delta(&feet, {0.0f, feet_delta, 0.0f}, dim->chunk_size_m);
+        feet = resized_feet;
         player->eye_height = clampf(player->eye_height - feet_delta, 0.05f, target_height + player_stand_eye_m);
     }
     player->current_height = target_height;
@@ -574,8 +601,10 @@ void player_controller_step(Dimension* dim, PlayerEntity* player, const PlayerCo
     player->eye_height = approach_float(player->eye_height, target_eye, player_eye_transition_mps * dt);
 
     float speed = player_walk_speed_mps;
-    if (player->is_crouching) speed = player_crouch_speed_mps;
-    else if (input.sprint) speed = player_sprint_speed_mps;
+    if (grounded_before) {
+        if (player->is_crouching) speed = player_crouch_speed_mps;
+        else if (input.sprint) speed = player_sprint_speed_mps;
+    }
 
     Vector3 wish = flat_right_from_yaw(player->yaw) * input.move.x + flat_forward_from_yaw(player->yaw) * input.move.y;
     if (safe_len(wish) > 0.001f) wish = safe_norm(wish) * speed;
@@ -589,8 +618,8 @@ void player_controller_step(Dimension* dim, PlayerEntity* player, const PlayerCo
         player->velocity.x = current_h.x;
         player->velocity.z = current_h.z;
     } else {
-        const float air_speed = fmaxf(speed, safe_len(current_h));
-        if (safe_len(target_h) > air_speed) target_h = safe_norm(target_h) * air_speed;
+        const float air_speed = safe_len(current_h);
+        target_h = safe_len(target_h) > 0.001f ? safe_norm(target_h) * air_speed : Vector3Zero();
         current_h = approach_horizontal_velocity(current_h, target_h, player_air_accel_mps2 * dt);
         if (safe_len(current_h) > air_speed) current_h = safe_norm(current_h) * air_speed;
         player->velocity.x = current_h.x;
@@ -632,11 +661,19 @@ void player_controller_step(Dimension* dim, PlayerEntity* player, const PlayerCo
     worldpos_add_delta(&feet, {player->velocity.x * dt, 0.0f, 0.0f}, dim->chunk_size_m);
     resolve_axis(dim, player, previous_feet, &feet, &player->velocity.x, true, grounded_before);
     resolve_box_corners(dim, player, &feet, grounded_before);
+    if (player_deeply_penetrates_axis_aligned_wall(dim, player, feet, grounded_before)) {
+        feet = previous_feet;
+        player->velocity.x = 0.0f;
+    }
 
     previous_feet = feet;
     worldpos_add_delta(&feet, {0.0f, 0.0f, player->velocity.z * dt}, dim->chunk_size_m);
     resolve_axis(dim, player, previous_feet, &feet, &player->velocity.z, false, grounded_before);
     resolve_box_corners(dim, player, &feet, grounded_before);
+    if (player_deeply_penetrates_axis_aligned_wall(dim, player, feet, grounded_before)) {
+        feet = previous_feet;
+        player->velocity.z = 0.0f;
+    }
     resolve_rotated_box_side_penetrations(dim, player, &feet, grounded_before);
     if (!player->on_ground) {
         resolve_walkable_landing_crossing(dim, player, frame_start_feet, &feet, &player->velocity.y);
@@ -645,19 +682,6 @@ void player_controller_step(Dimension* dim, PlayerEntity* player, const PlayerCo
         snap_to_walkable_ground(dim, player, &feet, &player->velocity.y, 0.35f, 0.18f);
     }
 
-    if (!input.crouch && player->current_height < player_stand_height_m - 0.01f) {
-        const float old_post_height = player->current_height;
-        if (player_can_use_height(dim, player, feet, player_stand_height_m)) {
-            if (!player->on_ground && std::fabs(player_stand_height_m - old_post_height) > 0.0001f) {
-                const float feet_delta = old_post_height - player_stand_height_m;
-                worldpos_add_delta(&feet, {0.0f, feet_delta, 0.0f}, dim->chunk_size_m);
-                player->eye_height = clampf(player->eye_height - feet_delta, 0.05f, player_stand_height_m + player_stand_eye_m);
-            } else {
-                player->eye_height = approach_float(player->eye_height, player_stand_eye_m, player_eye_transition_mps * dt);
-            }
-            player->current_height = player_stand_height_m;
-        }
-    }
     player->is_crouching = player->current_height < player_stand_height_m - 0.01f;
     if (player->on_ground) {
         player->eye_height = approach_float(player->eye_height, grounded_eye_for_height(player->current_height), player_eye_transition_mps * dt);

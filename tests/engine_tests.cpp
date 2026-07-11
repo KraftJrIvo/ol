@@ -324,18 +324,22 @@ bool test_player_airborne_sprint_speed_is_preserved() {
     input.jump_pressed = true;
     input.jump_held = true;
     ol::player_controller_step(dim, player, input, 1.0f / 60.0f);
+    const float takeoff_speed = player_horizontal_speed(player);
     input.jump_pressed = false;
+    float min_air_speed = 1000.0f;
     float max_air_speed = 0.0f;
     for (int i = 0; i < 30; ++i) {
+        input.crouch = i >= 5;
         ol::player_controller_step(dim, player, input, 1.0f / 60.0f);
         if (!player->on_ground && i > 2) {
             const float speed = player_horizontal_speed(player);
+            min_air_speed = fminf(min_air_speed, speed);
             max_air_speed = fmaxf(max_air_speed, speed);
         }
     }
 
-    bool ok = expect_true(max_air_speed > ol::player_sprint_speed_mps - 0.35f, "Airborne sprint movement is not capped down to walking speed");
-    ok = expect_true(max_air_speed <= ol::player_sprint_speed_mps + 0.05f, "Airborne sprint movement remains capped at sprint speed") && ok;
+    bool ok = expect_true(min_air_speed > takeoff_speed - 0.08f, "Air crouch does not brake horizontal momentum");
+    ok = expect_true(max_air_speed < takeoff_speed + 0.08f, "Holding sprint in the air does not add speed") && ok;
     return ok;
 }
 
@@ -1069,6 +1073,38 @@ bool test_player_air_crouch_brings_legs_up() {
     bool ok = expect_true(end_feet > start_feet + 0.80f, "Air crouch shortens the hitbox by bringing feet upward");
     ok = expect_true(near(end_top, start_top, 0.03f), "Air crouch keeps the top of the hitbox stable") && ok;
     ok = expect_true(near(end_eye, start_eye, 0.06f), "Air crouch keeps the camera/head height stable") && ok;
+    input.crouch = false;
+    ol::player_controller_step(dim, player, input, 1.0f / 60.0f);
+    const float stand_feet = feet_y(dim, player);
+    const float stand_top = stand_feet + player->current_height;
+    const float stand_eye = stand_feet + player->eye_height;
+    ok = expect_true(stand_feet < end_feet - 0.80f, "Air uncrouch restores the hitbox downward") && ok;
+    ok = expect_true(near(stand_top, end_top, 0.03f), "Air uncrouch keeps the top of the hitbox stable") && ok;
+    ok = expect_true(near(stand_eye, end_eye, 0.06f), "Air uncrouch does not move the camera upward") && ok;
+    return ok;
+}
+
+bool test_player_cannot_be_squeezed_through_narrow_gap() {
+    auto world = std::make_unique<ol::World>();
+    ol::world_init(world.get());
+    const ol::u32 dim_id = ol::world_add_dimension(world.get(), "narrow_gap", 16.0f, 64.0f);
+    ol::Dimension* dim = ol::world_get_dimension(world.get(), dim_id);
+    add_test_box(dim, dim_id, {0.0f, -0.5f, 0.0f}, {10.0f, 1.0f, 10.0f});
+    add_test_box(dim, dim_id, {-0.65f, 1.0f, 0.0f}, {0.7f, 2.0f, 3.0f});
+    add_test_box(dim, dim_id, {0.65f, 1.0f, 0.0f}, {0.7f, 2.0f, 3.0f});
+    const ol::u32 player_id = ol::dimension_add_player(dim, "tester", WHITE,
+        test_pos(dim_id, {0.0f, 0.0f, 2.4f}, dim->chunk_size_m), true);
+    ol::PlayerEntity* player = ol::arena_get(&dim->players, player_id);
+
+    ol::PlayerControllerInput input{};
+    input.move = {0.0f, 1.0f};
+    input.sprint = true;
+    for (int i = 0; i < 120; ++i) ol::player_controller_step(dim, player, input, 1.0f / 60.0f);
+
+    const float x = feet_x(dim, player);
+    const float z = feet_z(dim, player);
+    bool ok = expect_true(z > 1.55f, "A sub-diameter gap blocks the player instead of squeezing him through");
+    ok = expect_true(std::fabs(x) < 0.10f, "Opposing collision corrections do not eject the player sideways") && ok;
     return ok;
 }
 
@@ -1423,6 +1459,7 @@ bool run_physics_tests() {
     run("player_low_ramp_side_camera_step_is_smoothed", test_player_low_ramp_side_camera_step_is_smoothed);
     run("player_crouch_transition_reverses_smoothly", test_player_crouch_transition_reverses_smoothly);
     run("player_air_crouch_brings_legs_up", test_player_air_crouch_brings_legs_up);
+    run("player_cannot_be_squeezed_through_narrow_gap", test_player_cannot_be_squeezed_through_narrow_gap);
     run("player_auto_stands_after_tunnel_exit", test_player_auto_stands_after_tunnel_exit);
     run("player_jump_does_not_pass_through_tunnel_roof", test_player_jump_does_not_pass_through_tunnel_roof);
     run("player_tunnel_exit_uncrouch_does_not_pass_through_roof", test_player_tunnel_exit_uncrouch_does_not_pass_through_roof);

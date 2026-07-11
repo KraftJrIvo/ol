@@ -792,11 +792,11 @@ static void add_landscape_building(DemoApp* app, Dimension* dim, StreamedWorldCh
     const Color floor = {132, 120, 94, 255};
 
     add_streamed_box(app, dim, chunk, "hill house floor", {base_x, base_y - 0.10f, base_z}, {8.4f, 0.32f, 8.4f}, floor, collider, true, true);
-    add_streamed_box(app, dim, chunk, "hill house back wall", {base_x, base_y + 1.45f, base_z - 4.05f}, {8.4f, 2.9f, 0.35f}, wall, collider, true, true);
+    add_streamed_box(app, dim, chunk, "hill house back wall", {base_x, base_y + 1.45f, base_z - 4.05f}, {7.70f, 2.9f, 0.35f}, wall, collider, true, true);
     add_streamed_box(app, dim, chunk, "hill house left wall", {base_x - 4.05f, base_y + 1.45f, base_z}, {0.35f, 2.9f, 8.4f}, wall, collider, true, true);
     add_streamed_box(app, dim, chunk, "hill house right wall", {base_x + 4.05f, base_y + 1.45f, base_z}, {0.35f, 2.9f, 8.4f}, wall, collider, true, true);
-    add_streamed_box(app, dim, chunk, "hill house front left", {base_x - 2.75f, base_y + 1.45f, base_z + 4.05f}, {2.6f, 2.9f, 0.35f}, wall, collider, true, true);
-    add_streamed_box(app, dim, chunk, "hill house front right", {base_x + 2.75f, base_y + 1.45f, base_z + 4.05f}, {2.6f, 2.9f, 0.35f}, wall, collider, true, true);
+    add_streamed_box(app, dim, chunk, "hill house front left", {base_x - 2.6625f, base_y + 1.45f, base_z + 4.05f}, {2.425f, 2.9f, 0.35f}, wall, collider, true, true);
+    add_streamed_box(app, dim, chunk, "hill house front right", {base_x + 2.6625f, base_y + 1.45f, base_z + 4.05f}, {2.425f, 2.9f, 0.35f}, wall, collider, true, true);
     add_streamed_box(app, dim, chunk, "hill house lintel", {base_x, base_y + 2.55f, base_z + 4.05f}, {2.9f, 0.70f, 0.35f}, wall, collider, true, true);
     add_streamed_box(app, dim, chunk, "hill house roof", {base_x, base_y + 3.10f, base_z}, {8.9f, 0.45f, 8.9f}, roof, collider, true, true);
 
