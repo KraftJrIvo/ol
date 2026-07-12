@@ -3,11 +3,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <mutex>
+#include <thread>
 
 namespace ol {
 
@@ -93,6 +96,7 @@ static void capture_frame_input(DemoApp* app) {
     input.plus_pressed = frame_key_pressed(app, KEY_EQUAL, queued_keys) || frame_key_pressed(app, KEY_KP_ADD, queued_keys);
     input.minus_pressed = frame_key_pressed(app, KEY_MINUS, queued_keys) || frame_key_pressed(app, KEY_KP_SUBTRACT, queued_keys);
     input.f3_pressed = frame_key_pressed(app, KEY_F3, queued_keys);
+    input.p_pressed = frame_key_pressed(app, KEY_P, queued_keys);
     input.f11_pressed = frame_key_pressed(app, KEY_F11, queued_keys);
     input.r_pressed = frame_key_pressed(app, KEY_R, queued_keys);
     input.c_pressed = frame_key_pressed(app, KEY_C, queued_keys);
@@ -104,21 +108,24 @@ static void capture_frame_input(DemoApp* app) {
 
     const int tracked_keys[] = {
         KEY_TAB, KEY_BACKSPACE, KEY_ESCAPE, KEY_ENTER, KEY_EQUAL, KEY_KP_ADD,
-        KEY_MINUS, KEY_KP_SUBTRACT, KEY_F3, KEY_F11, KEY_R, KEY_C, KEY_O, KEY_SPACE
+        KEY_MINUS, KEY_KP_SUBTRACT, KEY_F3, KEY_P, KEY_F11, KEY_R, KEY_C, KEY_O, KEY_SPACE
     };
     for (int key : tracked_keys) update_previous_key(app, key);
 }
 
 static constexpr const char* world_playground_name = "playground";
 static constexpr const char* world_hills_name = "hills";
+static constexpr const char* world_cave_name = "cave";
 static constexpr const char* world_choices[] = {
     world_playground_name,
     world_hills_name,
+    world_cave_name,
 };
 static constexpr u32 world_choice_count = static_cast<u32>(sizeof(world_choices) / sizeof(world_choices[0]));
 
 static const char* canonical_world_name(const char* name) {
     if (name && std::strcmp(name, world_hills_name) == 0) return world_hills_name;
+    if (name && std::strcmp(name, world_cave_name) == 0) return world_cave_name;
     return world_playground_name;
 }
 
@@ -126,12 +133,52 @@ static bool is_landscape_world(const char* name) {
     return std::strcmp(canonical_world_name(name), world_hills_name) == 0;
 }
 
+static bool is_cave_world(const char* name) {
+    return std::strcmp(canonical_world_name(name), world_cave_name) == 0;
+}
+
 static int default_quality_radius_for_world(const char* name) {
-    return is_landscape_world(name) ? 3 : 4;
+    return (is_landscape_world(name) || is_cave_world(name)) ? 3 : 4;
 }
 
 static int clamped_render_radius(int radius) {
     return static_cast<int>(clampf(static_cast<float>(radius), static_cast<float>(pause_render_radius_min), static_cast<float>(pause_render_radius_max)));
+}
+
+template <size_t N>
+static int nearest_lighting_option(int value, const int (&options)[N]) {
+    int best = options[0];
+    int best_distance = std::abs(value - best);
+    for (size_t i = 1; i < N; ++i) {
+        const int distance = std::abs(value - options[i]);
+        if (distance < best_distance) {
+            best = options[i];
+            best_distance = distance;
+        }
+    }
+    return best;
+}
+
+static RadianceCascadeSettings sanitized_lighting_settings(RadianceCascadeSettings settings) {
+    constexpr int indirect_options[] = {4, 8, 16, 32, 64};
+    constexpr int shadow_options[] = {1, 2, 4, 8, 16};
+    constexpr int temporal_options[] = {0, 4, 16, 64, 256};
+    settings.probe_extra_levels = static_cast<int>(clampf(static_cast<float>(settings.probe_extra_levels), 0.0f, 2.0f));
+    settings.cascade_iterations = static_cast<int>(clampf(static_cast<float>(settings.cascade_iterations), 1.0f, 3.0f));
+    settings.indirect_samples = nearest_lighting_option(settings.indirect_samples, indirect_options);
+    settings.shadow_samples = nearest_lighting_option(settings.shadow_samples, shadow_options);
+    settings.temporal_frames = nearest_lighting_option(settings.temporal_frames, temporal_options);
+    settings.lighting_radius_chunks = static_cast<int>(clampf(
+        static_cast<float>(settings.lighting_radius_chunks),
+        static_cast<float>(pause_lighting_radius_min),
+        static_cast<float>(pause_lighting_radius_max)));
+    return settings;
+}
+
+static void apply_profile_lighting_settings(DemoApp* app) {
+    if (!app) return;
+    app->profile.lighting = sanitized_lighting_settings(app->profile.lighting);
+    app->renderer.lighting = app->profile.lighting;
 }
 
 static void copy_world_name(char* dst, size_t cap, const char* src) {
@@ -327,14 +374,27 @@ static const SavedPlayerState* find_saved_player(const SavedSessionState* sessio
     return nullptr;
 }
 
-static void upsert_player_state(SavedSessionState* session, const SavedPlayerState& state) {
-    if (!session || !state.valid) return;
+static bool saved_player_state_equal(const SavedPlayerState& a, const SavedPlayerState& b) {
+    return a.valid == b.valid &&
+        a.peer_id == b.peer_id &&
+        std::strcmp(a.name, b.name) == 0 &&
+        ColorToInt(a.color) == ColorToInt(b.color) &&
+        chunk_equal(a.chunk, b.chunk) &&
+        a.local.x == b.local.x && a.local.y == b.local.y && a.local.z == b.local.z &&
+        a.yaw == b.yaw && a.pitch == b.pitch &&
+        a.body_radius == b.body_radius && a.current_height == b.current_height;
+}
+
+static bool upsert_player_state(SavedSessionState* session, const SavedPlayerState& state) {
+    if (!session || !state.valid) return false;
     if (SavedPlayerState* existing = find_saved_player(session, state.peer_id)) {
+        if (saved_player_state_equal(*existing, state)) return false;
         *existing = state;
-        return;
+        return true;
     }
-    if (session->player_count >= max_players) return;
+    if (session->player_count >= max_players) return false;
     session->players[session->player_count++] = state;
+    return true;
 }
 
 static char hex_digit(unsigned v) {
@@ -388,6 +448,7 @@ static void load_profile(DemoApp* app) {
         app->player_color = app->profile.player_color;
         app->renderer.fov = static_cast<float>(app->profile.fov);
         app->renderer.scale_power = app->profile.scale_power;
+        apply_profile_lighting_settings(app);
         return;
     }
 
@@ -430,6 +491,30 @@ static void load_profile(DemoApp* app) {
         } else if (std::strcmp(cmd, "render_radius") == 0) {
             const char* value = std::strtok(nullptr, " \t\r\n");
             if (value) app->profile.render_radius_chunks = clamped_render_radius(std::atoi(value));
+        } else if (std::strcmp(cmd, "lighting_enabled") == 0) {
+            app->profile.lighting.enabled = parse_profile_bool(std::strtok(nullptr, " \t\r\n"), app->profile.lighting.enabled);
+        } else if (std::strcmp(cmd, "lighting_probe_extra_levels") == 0) {
+            const char* value = std::strtok(nullptr, " \t\r\n");
+            if (value) app->profile.lighting.probe_extra_levels = std::atoi(value);
+        } else if (std::strcmp(cmd, "lighting_cascade_iterations") == 0) {
+            const char* value = std::strtok(nullptr, " \t\r\n");
+            if (value) app->profile.lighting.cascade_iterations = std::atoi(value);
+        } else if (std::strcmp(cmd, "lighting_indirect_samples") == 0) {
+            const char* value = std::strtok(nullptr, " \t\r\n");
+            if (value) app->profile.lighting.indirect_samples = std::atoi(value);
+        } else if (std::strcmp(cmd, "lighting_shadow_samples") == 0) {
+            const char* value = std::strtok(nullptr, " \t\r\n");
+            if (value) app->profile.lighting.shadow_samples = std::atoi(value);
+        } else if (std::strcmp(cmd, "lighting_temporal_frames") == 0) {
+            const char* value = std::strtok(nullptr, " \t\r\n");
+            if (value) app->profile.lighting.temporal_frames = std::atoi(value);
+        } else if (std::strcmp(cmd, "lighting_radius_chunks") == 0) {
+            const char* value = std::strtok(nullptr, " \t\r\n");
+            if (value) app->profile.lighting.lighting_radius_chunks = std::atoi(value);
+        } else if (std::strcmp(cmd, "lighting_jitter") == 0) {
+            app->profile.lighting.jitter = parse_profile_bool(std::strtok(nullptr, " \t\r\n"), app->profile.lighting.jitter);
+        } else if (std::strcmp(cmd, "lighting_corner_merge") == 0) {
+            app->profile.lighting.corner_merge = parse_profile_bool(std::strtok(nullptr, " \t\r\n"), app->profile.lighting.corner_merge);
         } else if (std::strcmp(cmd, "fullscreen") == 0) {
             app->profile.fullscreen = parse_profile_bool(std::strtok(nullptr, " \t\r\n"), app->profile.fullscreen);
         } else if (std::strcmp(cmd, "fps_counter") == 0) {
@@ -533,48 +618,61 @@ static void load_profile(DemoApp* app) {
     app->player_color = app->profile.player_color;
     app->renderer.fov = static_cast<float>(app->profile.fov);
     app->renderer.scale_power = app->profile.scale_power;
+    apply_profile_lighting_settings(app);
     app->profile_dirty = false;
 }
 
-static void save_profile(DemoApp* app) {
+static void sync_profile_from_app(DemoApp* app) {
     copy_text(app->profile.player_name, sizeof(app->profile.player_name), app->player_name);
     copy_text(app->profile.session_name, sizeof(app->profile.session_name), app->session_name);
     copy_world_name(app->profile.world_name, sizeof(app->profile.world_name), app->world_name);
     app->profile.player_color = app->player_color;
     app->profile.fov = static_cast<int>(clampf(floorf(app->renderer.fov + 0.5f), 60.0f, 120.0f));
     app->profile.scale_power = static_cast<int>(clampf(static_cast<float>(app->renderer.scale_power), 0.0f, 4.0f));
+    app->profile.lighting = sanitized_lighting_settings(app->renderer.lighting);
     if (visible_window_ready()) {
         app->profile.fullscreen = IsWindowFullscreen();
     }
     if (app->profile.render_radius_chunks > 0) {
         app->profile.render_radius_chunks = clamped_render_radius(app->profile.render_radius_chunks);
     }
+}
 
+static bool write_profile_snapshot(const DemoProfile& profile) {
     std::FILE* file = std::fopen("ol_state.txt", "w");
-    if (!file) return;
+    if (!file) return false;
 
     char encoded[128]{};
     std::fprintf(file, "OL_STATE 2\n");
-    encode_text_token(app->profile.player_name, encoded, sizeof(encoded));
+    encode_text_token(profile.player_name, encoded, sizeof(encoded));
     std::fprintf(file, "player %s\n", encoded);
-    encode_text_token(app->profile.session_name, encoded, sizeof(encoded));
+    encode_text_token(profile.session_name, encoded, sizeof(encoded));
     std::fprintf(file, "session %s\n", encoded);
-    encode_text_token(app->profile.world_name, encoded, sizeof(encoded));
+    encode_text_token(profile.world_name, encoded, sizeof(encoded));
     std::fprintf(file, "world %s\n", encoded);
     std::fprintf(file, "color %u %u %u\n",
-        static_cast<unsigned>(app->profile.player_color.r),
-        static_cast<unsigned>(app->profile.player_color.g),
-        static_cast<unsigned>(app->profile.player_color.b));
-    std::fprintf(file, "fov %d\n", app->profile.fov);
-    std::fprintf(file, "scale %d\n", app->profile.scale_power);
-    std::fprintf(file, "fullscreen %d\n", app->profile.fullscreen ? 1 : 0);
-    std::fprintf(file, "fps_counter %d\n", app->profile.show_fps ? 1 : 0);
-    if (app->profile.render_radius_chunks > 0) {
-        std::fprintf(file, "render_radius %d\n", app->profile.render_radius_chunks);
+        static_cast<unsigned>(profile.player_color.r),
+        static_cast<unsigned>(profile.player_color.g),
+        static_cast<unsigned>(profile.player_color.b));
+    std::fprintf(file, "fov %d\n", profile.fov);
+    std::fprintf(file, "scale %d\n", profile.scale_power);
+    std::fprintf(file, "fullscreen %d\n", profile.fullscreen ? 1 : 0);
+    std::fprintf(file, "fps_counter %d\n", profile.show_fps ? 1 : 0);
+    std::fprintf(file, "lighting_enabled %d\n", profile.lighting.enabled ? 1 : 0);
+    std::fprintf(file, "lighting_probe_extra_levels %d\n", profile.lighting.probe_extra_levels);
+    std::fprintf(file, "lighting_cascade_iterations %d\n", profile.lighting.cascade_iterations);
+    std::fprintf(file, "lighting_indirect_samples %d\n", profile.lighting.indirect_samples);
+    std::fprintf(file, "lighting_shadow_samples %d\n", profile.lighting.shadow_samples);
+    std::fprintf(file, "lighting_temporal_frames %d\n", profile.lighting.temporal_frames);
+    std::fprintf(file, "lighting_radius_chunks %d\n", profile.lighting.lighting_radius_chunks);
+    std::fprintf(file, "lighting_jitter %d\n", profile.lighting.jitter ? 1 : 0);
+    std::fprintf(file, "lighting_corner_merge %d\n", profile.lighting.corner_merge ? 1 : 0);
+    if (profile.render_radius_chunks > 0) {
+        std::fprintf(file, "render_radius %d\n", profile.render_radius_chunks);
     }
 
-    for (u32 i = 0; i < app->profile.session_count; ++i) {
-        const SavedSessionState& session = app->profile.sessions[i];
+    for (u32 i = 0; i < profile.session_count; ++i) {
+        const SavedSessionState& session = profile.sessions[i];
         if (!session.valid || !session.name[0]) continue;
         encode_text_token(session.name, encoded, sizeof(encoded));
         char encoded_world[128]{};
@@ -622,9 +720,115 @@ static void save_profile(DemoApp* app) {
         std::fprintf(file, "end\n");
     }
 
-    std::fclose(file);
+    bool write_failed = std::ferror(file) != 0;
+    if (std::fflush(file) != 0) write_failed = true;
+    const bool close_failed = std::fclose(file) != 0;
+    return !write_failed && !close_failed;
+}
+
+struct ProfileSaveWorker {
+    std::mutex mutex{};
+    std::condition_variable wake{};
+    std::thread thread{};
+    bool stop = false;
+    bool pending = false;
+    bool writing = false;
+    bool write_failed = false;
+    DemoProfile pending_profile{};
+};
+
+static ProfileSaveWorker* profile_save_worker(DemoApp* app) {
+    return app ? static_cast<ProfileSaveWorker*>(app->profile_save_worker) : nullptr;
+}
+
+static void profile_save_worker_main(ProfileSaveWorker* state) {
+    std::unique_lock<std::mutex> lock(state->mutex);
+    for (;;) {
+        state->wake.wait(lock, [&]() { return state->stop || state->pending; });
+        if (state->stop && !state->pending) break;
+
+        DemoProfile snapshot = std::move(state->pending_profile);
+        state->pending = false;
+        state->writing = true;
+        lock.unlock();
+        const bool wrote = write_profile_snapshot(snapshot);
+        snapshot = DemoProfile{};
+        lock.lock();
+        state->writing = false;
+        if (!wrote) state->write_failed = true;
+        state->wake.notify_all();
+    }
+}
+
+static void start_profile_save_worker(DemoApp* app) {
+    if (!app || app->profile_save_worker) return;
+    auto* state = new ProfileSaveWorker{};
+    state->thread = std::thread(profile_save_worker_main, state);
+    app->profile_save_worker = state;
+}
+
+static void collect_profile_save_failure(DemoApp* app) {
+    ProfileSaveWorker* state = profile_save_worker(app);
+    if (!state) return;
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (!state->write_failed) return;
+    state->write_failed = false;
+    app->profile_dirty = true;
+}
+
+static void flush_profile_save_worker(DemoApp* app) {
+    ProfileSaveWorker* state = profile_save_worker(app);
+    if (!state) return;
+    std::unique_lock<std::mutex> lock(state->mutex);
+    state->wake.wait(lock, [&]() { return !state->pending && !state->writing; });
+    if (state->write_failed) {
+        state->write_failed = false;
+        app->profile_dirty = true;
+    }
+}
+
+static void stop_profile_save_worker(DemoApp* app) {
+    ProfileSaveWorker* state = profile_save_worker(app);
+    if (!state) return;
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->stop = true;
+    }
+    state->wake.notify_all();
+    if (state->thread.joinable()) state->thread.join();
+    if (state->write_failed) app->profile_dirty = true;
+    delete state;
+    app->profile_save_worker = nullptr;
+}
+
+static void queue_profile_save(DemoApp* app) {
+    if (!app) return;
+    sync_profile_from_app(app);
+    start_profile_save_worker(app);
+    DemoProfile snapshot = app->profile;
+    ProfileSaveWorker* state = profile_save_worker(app);
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->pending_profile = std::move(snapshot);
+        state->pending = true;
+    }
+    state->wake.notify_one();
     app->profile_dirty = false;
     app->last_profile_save_time = GetTime();
+    ++app->debug_profile_autosaves_queued;
+}
+
+static void save_profile(DemoApp* app) {
+    if (!app) return;
+    sync_profile_from_app(app);
+    flush_profile_save_worker(app);
+    if (!write_profile_snapshot(app->profile)) {
+        app->profile_dirty = true;
+        return;
+    }
+    app->profile_dirty = false;
+    app->last_profile_save_time = GetTime();
+    ++app->debug_profile_sync_saves;
 }
 
 static WorldPos demo_pos(u32 dimension, Vector3 meters, float chunk_size) {
@@ -699,6 +903,9 @@ static WorldPos default_player_spawn(const DemoApp* app, u32 dimension_id, float
         const float y = landscape_tile_height(0.0f, 8.0f, chunk_size) + 0.08f;
         return demo_pos(dimension_id, {0.0f, y, 8.0f}, chunk_size);
     }
+    if (app && is_cave_world(app->world_name)) {
+        return demo_pos(dimension_id, {8.0f, 0.0f, 27.0f}, chunk_size);
+    }
     return demo_pos(dimension_id, {0.0f, 0.0f, 8.0f}, chunk_size);
 }
 
@@ -743,6 +950,14 @@ static u32 add_visual_box(Dimension* dim, u32 dimension_id, u32 cube_geom, const
     return dimension_add_mesh(dim, mesh);
 }
 
+static void add_box_collider(Dimension* dim, u32 dimension_id, Vector3 center, Vector3 size, Color color) {
+    BoxCollider box{};
+    box.pos = demo_pos(dimension_id, center, dim->chunk_size_m);
+    box.half = size * 0.5f;
+    box.color = color;
+    physics_add_box(&dim->physics, box);
+}
+
 static void add_static_box(Dimension* dim, u32 dimension_id, u32 cube_geom, const char* name, Vector3 center, Vector3 size, Color color, bool lit = true, bool draw_edges = true) {
     const u32 mesh_id = add_visual_box(dim, dimension_id, cube_geom, name, center, size, color);
     MeshInstance* mesh = arena_get(&dim->meshes, mesh_id);
@@ -751,17 +966,81 @@ static void add_static_box(Dimension* dim, u32 dimension_id, u32 cube_geom, cons
         mesh->draw_edges = draw_edges;
     }
 
-    BoxCollider box{};
-    box.pos = demo_pos(dimension_id, center, dim->chunk_size_m);
-    box.half = size * 0.5f;
-    box.color = color;
-    physics_add_box(&dim->physics, box);
+    add_box_collider(dim, dimension_id, center, size, color);
+}
+
+static void push_emissive_material(MeshInstance* mesh, const char* name, Color color, float emission) {
+    if (!mesh) return;
+    MaterialLayer layer{};
+    std::snprintf(layer.name, sizeof(layer.name), "%s", name);
+    layer.has_emission = true;
+    layer.emission_color = color;
+    layer.emission = emission;
+    material_stack_push(&mesh->materials, layer);
+}
+
+static void push_reflective_material(MeshInstance* mesh, const char* name, float reflectivity) {
+    if (!mesh) return;
+    MaterialLayer layer{};
+    std::snprintf(layer.name, sizeof(layer.name), "%s", name);
+    layer.has_reflectivity = true;
+    layer.reflectivity = reflectivity;
+    material_stack_push(&mesh->materials, layer);
+}
+
+static u32 add_emissive_box(
+    Dimension* dim,
+    u32 dimension_id,
+    u32 cube_geom,
+    const char* name,
+    Vector3 center,
+    Vector3 size,
+    Color color,
+    float emission
+) {
+    const u32 mesh_id = add_visual_box(dim, dimension_id, cube_geom, name, center, size, color);
+    if (MeshInstance* mesh = arena_get(&dim->meshes, mesh_id)) {
+        mesh->lit = false;
+        mesh->draw_edges = false;
+        push_emissive_material(mesh, "emission", color, emission);
+    }
+    return mesh_id;
+}
+
+static u32 add_cave_box(
+    Dimension* dim,
+    u32 dimension_id,
+    u32 cube_geom,
+    const char* name,
+    Vector3 center,
+    Vector3 size,
+    Color color,
+    bool collider,
+    float reflectivity = 0.0f,
+    bool draw_edges = true
+) {
+    const u32 mesh_id = add_visual_box(dim, dimension_id, cube_geom, name, center, size, color);
+    if (MeshInstance* mesh = arena_get(&dim->meshes, mesh_id)) {
+        mesh->draw_edges = draw_edges;
+        if (reflectivity > 0.0f) push_reflective_material(mesh, "cave surface", reflectivity);
+    }
+    if (collider) add_box_collider(dim, dimension_id, center, size, color);
+    return mesh_id;
+}
+
+static void reset_cave_animation(DemoApp* app) {
+    if (!app) return;
+    app->cave_emissive_mesh_ids.fill(invalid_id);
+    app->cave_emissive_base_positions.fill({});
+    app->cave_animation_time = 0.0f;
 }
 
 static void clear_streamed_chunk_records(DemoApp* app) {
     app->streamed_chunks.clear();
     app->streamed_chunks.reserve(512);
     app->landscape_stream_center_valid = false;
+    app->debug_landscape_chunks_loaded = 0;
+    app->debug_landscape_chunks_unloaded = 0;
 }
 
 static bool streamed_chunk_matches(const StreamedWorldChunk& chunk, ChunkCoord coord) {
@@ -932,10 +1211,11 @@ static void generate_landscape_chunk(DemoApp* app, Dimension* dim, ChunkCoord co
 
 static void ensure_landscape_chunks_around(DemoApp* app, Dimension* dim, WorldPos center) {
     if (!app || !dim || !app->landscape_streaming) return;
-
-    if (app->landscape_stream_center_valid && chunk_equal(app->landscape_stream_center, center.chunk)) return;
+    const bool initial_fill = !app->landscape_stream_center_valid;
     app->landscape_stream_center_valid = true;
     app->landscape_stream_center = center.chunk;
+    app->debug_landscape_chunks_loaded = 0;
+    app->debug_landscape_chunks_unloaded = 0;
 
     const i32 radius = dim->render_radius_chunks + 1;
     const i32 keep_radius = radius + 1;
@@ -950,37 +1230,73 @@ static void ensure_landscape_chunks_around(DemoApp* app, Dimension* dim, WorldPo
         app->streamed_chunks.reserve(reserve_count);
     }
 
+    constexpr u32 streamed_chunk_commit_budget = 2;
+    const u32 unload_budget = initial_fill ? std::numeric_limits<u32>::max() : streamed_chunk_commit_budget;
     for (StreamedWorldChunk& chunk : app->streamed_chunks) {
         if (!chunk.valid) continue;
         const i32 dx = chunk.coord.x - cx;
         const i32 dz = chunk.coord.z - cz;
         const i32 dist_sq = dx * dx + dz * dz;
         if (dist_sq > keep_radius * keep_radius) {
+            if (app->debug_landscape_chunks_unloaded >= unload_budget) continue;
             unload_streamed_chunk(dim, &chunk);
+            ++app->debug_landscape_chunks_unloaded;
         } else if (dist_sq > collider_radius_sq && chunk.colliders_loaded) {
+            if (app->debug_landscape_chunks_unloaded >= unload_budget) continue;
             unload_streamed_chunk_colliders(dim, &chunk);
+            ++app->debug_landscape_chunks_unloaded;
         }
     }
 
+    struct PendingChunk {
+        ChunkCoord coord{};
+        i32 distance_sq = 0;
+        bool collidable = false;
+        bool rebuild = false;
+    };
+    std::vector<PendingChunk> pending{};
+    pending.reserve(static_cast<size_t>((radius * 2 + 1) * (radius * 2 + 1)));
     for (i32 dz = -radius; dz <= radius; ++dz) {
         for (i32 dx = -radius; dx <= radius; ++dx) {
-            if (dx * dx + dz * dz > radius * radius) continue;
-            ChunkCoord coord{cx + dx, 0, cz + dz};
-            const bool collidable = dx * dx + dz * dz <= collider_radius_sq;
+            const i32 distance_sq = dx * dx + dz * dz;
+            if (distance_sq > radius * radius) continue;
+            const ChunkCoord coord{cx + dx, 0, cz + dz};
+            const bool collidable = distance_sq <= collider_radius_sq;
             StreamedWorldChunk* chunk = find_streamed_chunk(app, coord);
-            if (!chunk) {
-                generate_landscape_chunk(app, dim, coord, collidable);
-            } else if (collidable && !chunk->colliders_loaded) {
-                unload_streamed_chunk(dim, chunk);
-                generate_landscape_chunk(app, dim, coord, true);
+            if (!chunk || (collidable && !chunk->colliders_loaded)) {
+                pending.push_back({coord, distance_sq, collidable, chunk != nullptr});
             }
         }
     }
+    std::stable_sort(pending.begin(), pending.end(), [](const PendingChunk& a, const PendingChunk& b) {
+        if (a.collidable != b.collidable) return a.collidable;
+        if (a.distance_sq != b.distance_sq) return a.distance_sq < b.distance_sq;
+        if (a.coord.z != b.coord.z) return a.coord.z < b.coord.z;
+        return a.coord.x < b.coord.x;
+    });
+    const u32 load_budget = initial_fill ? std::numeric_limits<u32>::max() : streamed_chunk_commit_budget;
+    for (const PendingChunk& request : pending) {
+        if (app->debug_landscape_chunks_loaded >= load_budget) break;
+        if (request.rebuild) {
+            if (StreamedWorldChunk* chunk = find_streamed_chunk(app, request.coord)) {
+                unload_streamed_chunk(dim, chunk);
+            }
+        }
+        generate_landscape_chunk(app, dim, request.coord, request.collidable);
+        ++app->debug_landscape_chunks_loaded;
+    }
 }
 
-static void update_landscape_streaming(DemoApp* app, Dimension* dim, const PlayerEntity* player) {
+void demo_update_landscape_streaming(DemoApp* app, Dimension* dim, const PlayerEntity* player) {
     if (!app || !dim || !player || !app->landscape_streaming) return;
-    ensure_landscape_chunks_around(app, dim, player_feet_pos(dim, player));
+    WorldPos center = player_feet_pos(dim, player);
+    constexpr float prefetch_margin_m = 5.0f;
+    if (center.local.x < prefetch_margin_m && player->velocity.x < -0.1f) --center.chunk.x;
+    if (center.local.x > dim->chunk_size_m - prefetch_margin_m && player->velocity.x > 0.1f) ++center.chunk.x;
+    if (center.local.z < prefetch_margin_m && player->velocity.z < -0.1f) --center.chunk.z;
+    if (center.local.z > dim->chunk_size_m - prefetch_margin_m && player->velocity.z > 0.1f) ++center.chunk.z;
+    center.local = {};
+    ensure_landscape_chunks_around(app, dim, center);
 }
 
 static u16 add_contour_vertex(MeshGeometry* geometry, Vector3 vertex) {
@@ -1207,6 +1523,7 @@ static void generate_playground_world(DemoApp* app) {
     world_init(&app->world);
     reset_remote_players(app);
     clear_streamed_chunk_records(app);
+    reset_cave_animation(app);
     app->landscape_streaming = false;
     app->landscape_cube_geom = invalid_id;
     app->dimension_id = world_add_dimension(&app->world, "default", 16.0f, 64.0f);
@@ -1228,14 +1545,14 @@ static void generate_playground_world(DemoApp* app) {
     MeshGeometry wedge = make_wedge_geometry("wedge", {1.0f, 1.0f, 1.0f});
     const u32 wedge_id = dimension_add_geometry(dim, wedge);
 
-    add_static_box(dim, app->dimension_id, cube_id, "floor", {0.0f, -0.5f, 0.0f}, {40.0f, 1.0f, 40.0f}, {118, 134, 123, 255}, false, false);
-    add_static_box(dim, app->dimension_id, cube_id, "north wall", {0.0f, 2.0f, -18.5f}, {40.0f, 4.0f, 1.0f}, {96, 105, 124, 255}, false, true);
-    add_static_box(dim, app->dimension_id, cube_id, "west wall", {-18.5f, 2.0f, 0.0f}, {1.0f, 4.0f, 40.0f}, {93, 113, 123, 255}, false, true);
+    add_static_box(dim, app->dimension_id, cube_id, "floor", {0.0f, -0.5f, 0.0f}, {40.0f, 1.0f, 40.0f}, {118, 134, 123, 255}, true, false);
+    add_static_box(dim, app->dimension_id, cube_id, "north wall", {0.0f, 2.0f, -18.5f}, {40.0f, 4.0f, 1.0f}, {96, 105, 124, 255}, true, true);
+    add_static_box(dim, app->dimension_id, cube_id, "west wall", {-18.5f, 2.0f, 0.0f}, {1.0f, 4.0f, 40.0f}, {93, 113, 123, 255}, true, true);
     add_static_box(dim, app->dimension_id, cube_id, "block a", {4.5f, 1.0f, -4.5f}, {3.0f, 2.0f, 3.0f}, {174, 96, 88, 255});
     add_static_box(dim, app->dimension_id, cube_id, "block b", {-4.0f, 1.0f, -2.5f}, {2.0f, 2.0f, 5.0f}, {96, 145, 112, 255});
-    add_static_box(dim, app->dimension_id, cube_id, "tunnel left", {8.5f, 0.5f, -3.5f}, {1.0f, 1.0f, 5.0f}, {108, 120, 145, 255}, false, false);
-    add_static_box(dim, app->dimension_id, cube_id, "tunnel right", {11.5f, 0.5f, -3.5f}, {1.0f, 1.0f, 5.0f}, {108, 120, 145, 255}, false, false);
-    add_static_box(dim, app->dimension_id, cube_id, "tunnel roof", {10.0f, 1.5f, -3.5f}, {4.0f, 1.0f, 5.0f}, {93, 102, 130, 255}, false, false);
+    add_static_box(dim, app->dimension_id, cube_id, "tunnel left", {8.5f, 0.5f, -3.5f}, {1.0f, 1.0f, 5.0f}, {108, 120, 145, 255}, true, false);
+    add_static_box(dim, app->dimension_id, cube_id, "tunnel right", {11.5f, 0.5f, -3.5f}, {1.0f, 1.0f, 5.0f}, {108, 120, 145, 255}, true, false);
+    add_static_box(dim, app->dimension_id, cube_id, "tunnel roof", {10.0f, 1.5f, -3.5f}, {4.0f, 1.0f, 5.0f}, {93, 102, 130, 255}, true, false);
     add_contour_mesh(dim, app->dimension_id, make_tunnel_contour_geometry("tunnel contours"), "tunnel contours", {10.0f, 1.0f, -3.5f}, 3.5f);
 
     add_static_box(dim, app->dimension_id, cube_id, "step 1", {-8.5f, 0.0f, 5.5f}, {3.0f, 1.0f, 3.0f}, {166, 151, 92, 255}, true, false);
@@ -1250,6 +1567,7 @@ static void generate_playground_world(DemoApp* app) {
     ramp.se3 = MatrixScale(5.0f, 1.0f, 5.0f);
     ramp.color = {117, 136, 182, 255};
     ramp.texture_id = render_texture_grid;
+    ramp.bounds_radius = Vector3Length(Vector3{5.0f, 1.0f, 5.0f}) * 0.5f;
     dimension_add_mesh(dim, ramp);
 
     BoxCollider ramp_collider{};
@@ -1260,7 +1578,7 @@ static void generate_playground_world(DemoApp* app) {
     ramp_collider.color = ramp.color;
     physics_add_box(&dim->physics, ramp_collider);
 
-    add_static_box(dim, app->dimension_id, cube_id, "ramp landing", {7.5f, 0.5f, 11.0f}, {5.0f, 1.0f, 4.0f}, {107, 126, 168, 255}, false, true);
+    add_static_box(dim, app->dimension_id, cube_id, "ramp landing", {7.5f, 0.5f, 11.0f}, {5.0f, 1.0f, 4.0f}, {107, 126, 168, 255}, true, true);
 
     SpriteInstance sprite{};
     sprite.size = {1.2f, 1.2f};
@@ -1283,21 +1601,161 @@ static void generate_playground_world(DemoApp* app) {
     sprite.billboard = billboard_none;
     dimension_add_sprite(dim, sprite);
 
-    LightSource light{};
-    std::snprintf(light.name, sizeof(light.name), "warm light");
-    light.pos = demo_pos(app->dimension_id, {0.0f, 5.5f, -5.0f}, dim->chunk_size_m);
-    light.color = {255, 230, 180, 255};
-    light.radius = 14.0f;
-    light.intensity = 1.2f;
-    dimension_add_light(dim, light);
+    add_emissive_box(
+        dim,
+        app->dimension_id,
+        cube_id,
+        "playground warm emitter",
+        {0.0f, 5.5f, -5.0f},
+        {1.0f, 1.0f, 1.0f},
+        {255, 230, 180, 255},
+        7.0f);
+    add_emissive_box(
+        dim,
+        app->dimension_id,
+        cube_id,
+        "playground blue emitter",
+        {-8.0f, 4.0f, 8.0f},
+        {1.0f, 1.0f, 1.0f},
+        {120, 160, 255, 255},
+        6.0f);
 
-    LightSource blue = light;
-    std::snprintf(blue.name, sizeof(blue.name), "blue light");
-    blue.pos = demo_pos(app->dimension_id, {-8.0f, 4.0f, 8.0f}, dim->chunk_size_m);
-    blue.color = {120, 160, 255, 255};
-    blue.radius = 10.0f;
-    blue.intensity = 0.9f;
-    dimension_add_light(dim, blue);
+    restore_current_session_paint(app, dim);
+    add_local_player_to_generated_world(app, dim);
+}
+
+static void generate_cave_world(DemoApp* app) {
+    world_init(&app->world);
+    reset_remote_players(app);
+    clear_streamed_chunk_records(app);
+    reset_cave_animation(app);
+    app->landscape_streaming = false;
+    app->landscape_cube_geom = invalid_id;
+    app->dimension_id = world_add_dimension(&app->world, "cave", 16.0f, 64.0f);
+    Dimension* dim = world_get_dimension(&app->world, app->dimension_id);
+    if (!dim) return;
+
+    dim->render_radius_chunks = 4;
+    dim->quality_render_radius_chunks = 3;
+    dim->ambient = 0.01f;
+    dim->sky_top = {3, 5, 9, 255};
+    dim->sky_bottom = {5, 7, 11, 255};
+    dim->fog_color = {4, 6, 10, 255};
+    apply_profile_render_radius(app, dim);
+
+    MeshGeometry cube = make_box_geometry("cave cube", {1.0f, 1.0f, 1.0f});
+    // Cave shell tiles meet exactly at chunk boundaries. Keep their fallback
+    // geometry identical so crossing the quality radius cannot expose seams or
+    // make an entire 16 m tile visibly shrink in one frame.
+    MeshGeometry cube_lod = make_box_geometry("cave cube lod", {1.0f, 1.0f, 1.0f});
+    const u32 cube_lod_id = dimension_add_geometry(dim, cube_lod);
+    cube.lod_geometry = cube_lod_id;
+    const u32 cube_id = dimension_add_geometry(dim, cube);
+
+    const Color cave_floor = {62, 72, 69, 255};
+    const Color cave_ceiling = {45, 52, 55, 255};
+    const Color cave_wall = {54, 63, 66, 255};
+    constexpr float tile_centers[] = {-8.0f, 8.0f, 24.0f};
+    for (u32 x = 0; x < 3; ++x) {
+        for (u32 z = 0; z < 3; ++z) {
+            char name[48]{};
+            std::snprintf(name, sizeof(name), "cave floor %u %u", x, z);
+            add_cave_box(
+                dim, app->dimension_id, cube_id, name,
+                {tile_centers[x], -0.5f, tile_centers[z]}, {16.0f, 1.0f, 16.0f},
+                cave_floor, false, 0.0f, false);
+            std::snprintf(name, sizeof(name), "cave ceiling %u %u", x, z);
+            add_cave_box(
+                dim, app->dimension_id, cube_id, name,
+                {tile_centers[x], 10.5f, tile_centers[z]}, {16.0f, 1.0f, 16.0f},
+                cave_ceiling, false, 0.0f, false);
+        }
+    }
+
+    for (u32 i = 0; i < 3; ++i) {
+        char name[48]{};
+        std::snprintf(name, sizeof(name), "cave west wall %u", i);
+        add_cave_box(
+            dim, app->dimension_id, cube_id, name,
+            {-16.5f, 5.0f, tile_centers[i]}, {1.0f, 10.0f, 16.0f},
+            cave_wall, false, 0.0f, false);
+        std::snprintf(name, sizeof(name), "cave east wall %u", i);
+        add_cave_box(
+            dim, app->dimension_id, cube_id, name,
+            {32.5f, 5.0f, tile_centers[i]}, {1.0f, 10.0f, 16.0f},
+            cave_wall, false, 0.0f, false);
+        std::snprintf(name, sizeof(name), "cave north wall %u", i);
+        add_cave_box(
+            dim, app->dimension_id, cube_id, name,
+            {tile_centers[i], 5.0f, -16.5f}, {16.0f, 10.0f, 1.0f},
+            cave_wall, false, 0.0f, false);
+        std::snprintf(name, sizeof(name), "cave south wall %u", i);
+        add_cave_box(
+            dim, app->dimension_id, cube_id, name,
+            {tile_centers[i], 5.0f, 32.5f}, {16.0f, 10.0f, 1.0f},
+            cave_wall, false, 0.0f, false);
+    }
+
+    // The shell is visually tiled for chunk-local lighting, but broad collision slabs
+    // avoid support discontinuities where neighboring visual tiles meet.
+    add_box_collider(dim, app->dimension_id, {8.0f, -0.5f, 8.0f}, {48.0f, 1.0f, 48.0f}, cave_floor);
+    add_box_collider(dim, app->dimension_id, {8.0f, 10.5f, 8.0f}, {48.0f, 1.0f, 48.0f}, cave_ceiling);
+    add_box_collider(dim, app->dimension_id, {-16.5f, 5.0f, 8.0f}, {1.0f, 10.0f, 48.0f}, cave_wall);
+    add_box_collider(dim, app->dimension_id, {32.5f, 5.0f, 8.0f}, {1.0f, 10.0f, 48.0f}, cave_wall);
+    add_box_collider(dim, app->dimension_id, {8.0f, 5.0f, -16.5f}, {48.0f, 10.0f, 1.0f}, cave_wall);
+    add_box_collider(dim, app->dimension_id, {8.0f, 5.0f, 32.5f}, {48.0f, 10.0f, 1.0f}, cave_wall);
+
+    const Color arch = {83, 73, 79, 255};
+    add_cave_box(dim, app->dimension_id, cube_id, "cave arch left", {4.0f, 3.0f, 7.0f}, {2.0f, 6.0f, 2.0f}, arch, true);
+    add_cave_box(dim, app->dimension_id, cube_id, "cave arch right", {12.0f, 3.0f, 7.0f}, {2.0f, 6.0f, 2.0f}, arch, true);
+    add_cave_box(dim, app->dimension_id, cube_id, "cave arch lintel", {8.0f, 7.0f, 7.0f}, {10.0f, 2.0f, 2.0f}, arch, true);
+
+    const Color grille = {70, 82, 88, 255};
+    constexpr float grille_x[] = {3.0f, 5.0f, 7.0f, 9.0f, 11.0f, 13.0f};
+    for (u32 i = 0; i < static_cast<u32>(sizeof(grille_x) / sizeof(grille_x[0])); ++i) {
+        char name[48]{};
+        std::snprintf(name, sizeof(name), "cave shadow grille %u", i);
+        add_cave_box(
+            dim, app->dimension_id, cube_id, name,
+            {grille_x[i], 2.5f, -1.0f}, {0.5f, 5.0f, 0.5f},
+            grille, true);
+    }
+
+    const Color blocks = {76, 68, 91, 255};
+    add_cave_box(dim, app->dimension_id, cube_id, "cave tall block", {20.0f, 2.0f, 18.0f}, {3.0f, 4.0f, 3.0f}, blocks, true);
+    add_cave_box(dim, app->dimension_id, cube_id, "cave thin block", {24.0f, 3.0f, 15.0f}, {2.0f, 6.0f, 2.0f}, blocks, true);
+    add_cave_box(dim, app->dimension_id, cube_id, "cave overhead bar", {22.0f, 7.0f, 16.0f}, {8.0f, 1.0f, 2.0f}, blocks, true);
+
+    add_cave_box(
+        dim, app->dimension_id, cube_id, "cave mirror panel",
+        {31.93f, 4.0f, 8.0f}, {0.125f, 6.0f, 10.0f},
+        {154, 174, 183, 255}, false, 0.95f, false);
+    add_cave_box(
+        dim, app->dimension_id, cube_id, "cave reflective plinth",
+        {20.0f, 1.5f, 4.0f}, {3.0f, 3.0f, 3.0f},
+        {111, 132, 146, 255}, true, 0.70f, true);
+    add_cave_box(
+        dim, app->dimension_id, cube_id, "cave reflective pool",
+        {8.0f, 0.02f, -8.0f}, {12.0f, 0.04f, 6.0f},
+        {76, 104, 116, 255}, false, 0.85f, false);
+
+    app->cave_emissive_base_positions = {
+        Vector3{2.0f, 6.0f, 20.0f},
+        Vector3{14.0f, 5.0f, 8.0f},
+        Vector3{24.0f, 7.0f, -5.0f},
+    };
+    app->cave_emissive_mesh_ids[0] = add_emissive_box(
+        dim, app->dimension_id, cube_id, "cave warm flying emitter",
+        app->cave_emissive_base_positions[0], {1.5f, 1.5f, 1.5f},
+        {255, 150, 55, 255}, 8.0f);
+    app->cave_emissive_mesh_ids[1] = add_emissive_box(
+        dim, app->dimension_id, cube_id, "cave cyan flying emitter",
+        app->cave_emissive_base_positions[1], {1.0f, 1.0f, 1.0f},
+        {70, 205, 255, 255}, 10.0f);
+    app->cave_emissive_mesh_ids[2] = add_emissive_box(
+        dim, app->dimension_id, cube_id, "cave violet flying emitter",
+        app->cave_emissive_base_positions[2], {2.0f, 2.0f, 2.0f},
+        {190, 90, 255, 255}, 7.0f);
 
     restore_current_session_paint(app, dim);
     add_local_player_to_generated_world(app, dim);
@@ -1307,6 +1765,7 @@ static void generate_hills_world(DemoApp* app) {
     world_init(&app->world);
     reset_remote_players(app);
     clear_streamed_chunk_records(app);
+    reset_cave_animation(app);
     app->landscape_streaming = true;
     app->dimension_id = world_add_dimension(&app->world, "hills", 16.0f, 64.0f);
     Dimension* dim = world_get_dimension(&app->world, app->dimension_id);
@@ -1326,14 +1785,6 @@ static void generate_hills_world(DemoApp* app) {
     cube.lod_geometry = cube_lod_id;
     app->landscape_cube_geom = dimension_add_geometry(dim, cube);
 
-    LightSource sun{};
-    std::snprintf(sun.name, sizeof(sun.name), "wide hill light");
-    sun.pos = demo_pos(app->dimension_id, {-18.0f, 18.0f, 12.0f}, dim->chunk_size_m);
-    sun.color = {255, 238, 202, 255};
-    sun.radius = 46.0f;
-    sun.intensity = 1.05f;
-    dimension_add_light(dim, sun);
-
     restore_current_session_paint(app, dim);
     add_local_player_to_generated_world(app, dim);
 }
@@ -1344,12 +1795,17 @@ void demo_generate_world(DemoApp* app) {
     copy_text(app->world_name, sizeof(app->world_name), normalized);
     if (is_landscape_world(app->world_name)) {
         generate_hills_world(app);
+    } else if (is_cave_world(app->world_name)) {
+        generate_cave_world(app);
     } else {
         generate_playground_world(app);
     }
 }
 
 void demo_init(DemoApp* app) {
+#if defined(OL_DISABLE_RAYLIB_LOGGING)
+    SetTraceLogLevel(LOG_NONE);
+#endif
     app->dimension_id = invalid_id;
     app->local_player_id = invalid_id;
     app->fixed_accum = 0.0f;
@@ -1376,12 +1832,14 @@ void demo_init(DemoApp* app) {
     std::snprintf(app->world_name, sizeof(app->world_name), "%s", world_playground_name);
     app->player_color = {90, 180, 255, 255};
     load_profile(app);
+    start_profile_save_worker(app);
     InitWindow(1280, 720, "OL");
     SetExitKey(KEY_NULL);
     SetWindowState(FLAG_WINDOW_RESIZABLE);
     set_fullscreen_enabled(app, app->profile.fullscreen, false);
     SetTargetFPS(120);
     renderer_init(&app->renderer);
+    apply_profile_lighting_settings(app);
     net_init(&app->net);
     demo_generate_world(app);
 }
@@ -1389,6 +1847,7 @@ void demo_init(DemoApp* app) {
 void demo_shutdown(DemoApp* app) {
     record_current_world_state(app);
     save_profile(app);
+    stop_profile_save_worker(app);
     net_shutdown(&app->net);
     renderer_shutdown(&app->renderer);
     CloseWindow();
@@ -2144,10 +2603,42 @@ static void update_player_aim_ray(DemoApp* app, Dimension* dim, PlayerEntity* pl
     else paint_targeted_pixel(app, dim, ray_start, hit, player->color);
 }
 
+static void update_cave_emissive_animation(DemoApp* app, Dimension* dim, float dt) {
+    if (!app || !dim || !is_cave_world(app->world_name)) return;
+    app->cave_animation_time += dt;
+    const float t = app->cave_animation_time;
+    const Vector3 offsets[] = {
+        {std::sin(t * 0.73f) * 0.55f, std::sin(t * 0.91f) * 0.45f, std::cos(t * 0.57f) * 0.65f},
+        // Keep the cyan cube's near face clear of the arch-right pillar at
+        // x=13. The previous 0.75 m swing let its 0.5 m half-width cross the
+        // pillar even though the source itself is non-colliding geometry.
+        {std::sin(t * 0.61f + 1.7f) * 0.40f, std::sin(t * 1.07f + 0.8f) * 0.65f, std::cos(t * 0.83f) * 0.55f},
+        {std::sin(t * 0.49f + 3.1f) * 1.20f, std::sin(t * 0.79f + 2.4f) * 0.50f, std::cos(t * 0.67f + 1.2f) * 0.70f},
+    };
+
+    for (u32 i = 0; i < app->cave_emissive_mesh_ids.size(); ++i) {
+        MeshInstance* mesh = arena_get(&dim->meshes, app->cave_emissive_mesh_ids[i]);
+        if (!mesh) continue;
+        const WorldPos base = demo_pos(app->dimension_id, app->cave_emissive_base_positions[i], dim->chunk_size_m);
+        const WorldPos animated = demo_pos(
+            app->dimension_id,
+            app->cave_emissive_base_positions[i] + offsets[i],
+            dim->chunk_size_m);
+        // The mesh stays registered in its original chunk; keeping the animation
+        // inside that chunk avoids stale chunk references in the current world API.
+        if (chunk_equal(base.chunk, animated.chunk) &&
+            (mesh->origin.local.x != animated.local.x ||
+             mesh->origin.local.y != animated.local.y ||
+             mesh->origin.local.z != animated.local.z)) {
+            mesh->origin = animated;
+        }
+    }
+}
+
 static void fixed_update(DemoApp* app, Dimension* dim, float dt) {
+    update_cave_emissive_animation(app, dim, dt);
     PlayerEntity* player = local_player(app, dim);
     if (!player) return;
-    update_landscape_streaming(app, dim, player);
     PlayerControllerInput input{};
     input.move = app->input.move;
     input.jump_pressed = app->input.jump_pressed;
@@ -2233,31 +2724,44 @@ static void record_current_world_state(DemoApp* app) {
     PlayerEntity* player = local_player(app, dim);
     if (!dim || !player) return;
 
-    SavedSessionState* session = upsert_session(&app->profile, app->session_name, app->world_name);
+    bool changed = false;
+    SavedSessionState* session = find_session(&app->profile, app->session_name);
+    if (!session) {
+        session = upsert_session(&app->profile, app->session_name, app->world_name);
+        changed = session != nullptr;
+    } else if (std::strcmp(session->world_name, app->world_name) != 0) {
+        copy_world_name(session->world_name, sizeof(session->world_name), app->world_name);
+        changed = true;
+    }
     if (!session) return;
 
-    session->painted_pixels.clear();
-    session->painted_pixels.reserve(dim->painted_pixels.size());
-    for (u32 i = 0; i < dim->painted_pixels.size(); ++i) {
-        const PaintedPixel& pixel = dim->painted_pixels[i];
-        SavedPaintPixel saved{};
-        saved.chunk = pixel.center.chunk;
-        saved.local = pixel.center.local;
-        saved.normal = pixel.normal;
-        saved.tangent = pixel.tangent;
-        saved.color = pixel.color;
-        saved.quad_offset = pixel.quad_offset;
-        saved.quad_half_size = pixel.quad_half_size;
-        saved.mesh_id = pixel.mesh_id;
-        saved.sprite_id = pixel.sprite_id;
-        saved.sprite_pixel_x = pixel.sprite_pixel_x;
-        saved.sprite_pixel_y = pixel.sprite_pixel_y;
-        session->painted_pixels.push_back(saved);
+    if (session->captured_paint_revision != dim->paint_revision) {
+        session->painted_pixels.clear();
+        session->painted_pixels.reserve(dim->painted_pixels.size());
+        for (u32 i = 0; i < dim->painted_pixels.size(); ++i) {
+            const PaintedPixel& pixel = dim->painted_pixels[i];
+            SavedPaintPixel saved{};
+            saved.chunk = pixel.center.chunk;
+            saved.local = pixel.center.local;
+            saved.normal = pixel.normal;
+            saved.tangent = pixel.tangent;
+            saved.color = pixel.color;
+            saved.quad_offset = pixel.quad_offset;
+            saved.quad_half_size = pixel.quad_half_size;
+            saved.mesh_id = pixel.mesh_id;
+            saved.sprite_id = pixel.sprite_id;
+            saved.sprite_pixel_x = pixel.sprite_pixel_x;
+            saved.sprite_pixel_y = pixel.sprite_pixel_y;
+            session->painted_pixels.push_back(saved);
+        }
+        session->captured_paint_revision = dim->paint_revision;
+        ++app->debug_profile_paint_snapshots;
+        changed = true;
     }
 
     NetPlayerState local = make_net_player_state(app, dim, player);
     local.peer_id = local_player_peer_id(app);
-    upsert_player_state(session, saved_state_from_net(local));
+    changed = upsert_player_state(session, saved_state_from_net(local)) || changed;
 
     for (u32 slot = 0; slot < max_players; ++slot) {
         const u64 peer_id = app->remote_peer_ids[slot];
@@ -2267,16 +2771,18 @@ static void record_current_world_state(DemoApp* app) {
         if (!remote) continue;
         NetPlayerState remote_state = make_net_player_state(app, dim, remote);
         remote_state.peer_id = peer_id;
-        upsert_player_state(session, saved_state_from_net(remote_state));
+        changed = upsert_player_state(session, saved_state_from_net(remote_state)) || changed;
     }
 
-    mark_profile_dirty(app);
+    if (changed) mark_profile_dirty(app);
 }
 
 static void autosave_profile_if_needed(DemoApp* app) {
+    collect_profile_save_failure(app);
     if (!app->profile_dirty) return;
-    if (GetTime() - app->last_profile_save_time < 2.0) return;
-    save_profile(app);
+    constexpr double autosave_debounce_s = 10.0;
+    if (GetTime() - app->last_profile_save_time < autosave_debounce_s) return;
+    queue_profile_save(app);
 }
 
 static u32 find_remote_slot(DemoApp* app, u64 peer_id) {
@@ -2519,6 +3025,8 @@ static void resume_game(DemoApp* app) {
 }
 
 static void exit_to_first_menu(DemoApp* app) {
+    record_current_world_state(app);
+    save_profile(app);
     net_leave(&app->net);
     reset_remote_players(app);
     app->in_game = false;
@@ -2569,7 +3077,8 @@ static void draw_pause(DemoApp* app, Dimension* dim, PlayerEntity* player) {
         app->renderer.scale_power,
         dim ? dim->render_radius_chunks : 6,
         visible_window_ready() ? IsWindowFullscreen() : app->profile.fullscreen,
-        app->profile.show_fps
+        app->profile.show_fps,
+        app->renderer.lighting
     });
 }
 
@@ -2653,7 +3162,7 @@ static bool update_joining_screen(DemoApp* app, Dimension* dim, PlayerEntity* pl
     player = dim ? local_player(app, dim) : nullptr;
     if (dim) apply_received_paint_pixels(app, dim);
     if (app->net.in_lobby && dim && player && app->joining_restore_applied && app->joining_paint_history_complete) {
-        update_landscape_streaming(app, dim, player);
+        demo_update_landscape_streaming(app, dim, player);
         if (GetTime() - app->joining_started >= 0.35) {
             app->joining_screen_active = false;
             app->mouse_captured = true;
@@ -2691,7 +3200,29 @@ static void update_pause_menu(DemoApp* app, Dimension* dim) {
             set_fps_counter_enabled(app, !app->profile.show_fps, true);
             return;
         }
-        if (hit.control == pause_control_fov || hit.control == pause_control_scale || hit.control == pause_control_render_radius) {
+        if (hit.control == pause_control_lighting_enabled) {
+            app->renderer.lighting.enabled = !app->renderer.lighting.enabled;
+            mark_profile_dirty(app);
+            return;
+        }
+        if (hit.control == pause_control_lighting_jitter) {
+            app->renderer.lighting.jitter = !app->renderer.lighting.jitter;
+            mark_profile_dirty(app);
+            return;
+        }
+        if (hit.control == pause_control_lighting_corner_merge) {
+            app->renderer.lighting.corner_merge = !app->renderer.lighting.corner_merge;
+            mark_profile_dirty(app);
+            return;
+        }
+        if (hit.control == pause_control_fov || hit.control == pause_control_scale ||
+            hit.control == pause_control_render_radius ||
+            hit.control == pause_control_lighting_probe_levels ||
+            hit.control == pause_control_lighting_iterations ||
+            hit.control == pause_control_lighting_indirect_samples ||
+            hit.control == pause_control_lighting_shadow_samples ||
+            hit.control == pause_control_lighting_temporal_frames ||
+            hit.control == pause_control_lighting_radius) {
             app->dragged_pause_control = hit.control;
         }
     }
@@ -2712,6 +3243,42 @@ static void update_pause_menu(DemoApp* app, Dimension* dim) {
         } else if (app->dragged_pause_control == pause_control_render_radius) {
             const int radius = demo_pause_value_from_mouse(pause_control_render_radius, GetMousePosition());
             set_dimension_render_radius(app, dim, radius, true);
+        } else if (app->dragged_pause_control == pause_control_lighting_probe_levels) {
+            const int value = demo_pause_value_from_mouse(pause_control_lighting_probe_levels, GetMousePosition());
+            if (app->renderer.lighting.probe_extra_levels != value) {
+                app->renderer.lighting.probe_extra_levels = value;
+                mark_profile_dirty(app);
+            }
+        } else if (app->dragged_pause_control == pause_control_lighting_iterations) {
+            const int value = demo_pause_value_from_mouse(pause_control_lighting_iterations, GetMousePosition());
+            if (app->renderer.lighting.cascade_iterations != value) {
+                app->renderer.lighting.cascade_iterations = value;
+                mark_profile_dirty(app);
+            }
+        } else if (app->dragged_pause_control == pause_control_lighting_indirect_samples) {
+            const int value = demo_pause_value_from_mouse(pause_control_lighting_indirect_samples, GetMousePosition());
+            if (app->renderer.lighting.indirect_samples != value) {
+                app->renderer.lighting.indirect_samples = value;
+                mark_profile_dirty(app);
+            }
+        } else if (app->dragged_pause_control == pause_control_lighting_shadow_samples) {
+            const int value = demo_pause_value_from_mouse(pause_control_lighting_shadow_samples, GetMousePosition());
+            if (app->renderer.lighting.shadow_samples != value) {
+                app->renderer.lighting.shadow_samples = value;
+                mark_profile_dirty(app);
+            }
+        } else if (app->dragged_pause_control == pause_control_lighting_temporal_frames) {
+            const int value = demo_pause_value_from_mouse(pause_control_lighting_temporal_frames, GetMousePosition());
+            if (app->renderer.lighting.temporal_frames != value) {
+                app->renderer.lighting.temporal_frames = value;
+                mark_profile_dirty(app);
+            }
+        } else if (app->dragged_pause_control == pause_control_lighting_radius) {
+            const int value = demo_pause_value_from_mouse(pause_control_lighting_radius, GetMousePosition());
+            if (app->renderer.lighting.lighting_radius_chunks != value) {
+                app->renderer.lighting.lighting_radius_chunks = value;
+                mark_profile_dirty(app);
+            }
         }
     }
 
@@ -2742,6 +3309,14 @@ static bool sync_session_from_network(DemoApp* app, Dimension* dim, PlayerEntity
         std::strcmp(app->session_name, app->net.session_name) != 0;
     const bool world_changed = app->net.world_name[0] &&
         std::strcmp(canonical_world_name(app->world_name), canonical_world_name(app->net.world_name)) != 0;
+
+    if (session_changed || world_changed) {
+        // Capture and durably flush the old world before changing the keys used to find
+        // its session or rebuilding its dimension. Transitions already obscure gameplay,
+        // so this is the safe place for the rare synchronous persistence barrier.
+        record_current_world_state(app);
+        save_profile(app);
+    }
 
     if (session_changed) {
         copy_text(app->session_name, sizeof(app->session_name), app->net.session_name);
@@ -2811,8 +3386,6 @@ static void update_game(DemoApp* app) {
 
     if (update_host_left_screen(app)) return;
     if (update_joining_screen(app, dim, player)) return;
-    update_landscape_streaming(app, dim, player);
-
     if (!app->paused && app->frame_input.escape_pressed) {
         pause_game(app);
         if (only_local_player(app)) {
@@ -2820,6 +3393,7 @@ static void update_game(DemoApp* app) {
         } else {
             tick_game_simulation(app, dim, GetFrameTime());
         }
+        demo_update_landscape_streaming(app, dim, player);
         player->aim_ray_active = false;
         if (update_network_state(app, dim, player)) {
             dim = world_get_dimension(&app->world, app->dimension_id);
@@ -2840,6 +3414,7 @@ static void update_game(DemoApp* app) {
             } else {
                 tick_game_simulation(app, dim, GetFrameTime());
             }
+            demo_update_landscape_streaming(app, dim, player);
             player->aim_ray_active = false;
             if (update_network_state(app, dim, player)) {
                 dim = world_get_dimension(&app->world, app->dimension_id);
@@ -2863,6 +3438,9 @@ static void update_game(DemoApp* app) {
         if (app->renderer.scale_power != before) mark_profile_dirty(app);
     }
     if (app->frame_input.f3_pressed) app->renderer.draw_physics_debug = !app->renderer.draw_physics_debug;
+    if (app->frame_input.p_pressed) {
+        renderer_toggle_pathtrace_comparison(&app->renderer);
+    }
     if (app->frame_input.r_pressed) {
         respawn_player_at_default(app, dim, player);
         app->fixed_accum = 0.0f;
@@ -2872,7 +3450,7 @@ static void update_game(DemoApp* app) {
 
     collect_input(app, player);
     tick_game_simulation(app, dim, GetFrameTime());
-    update_landscape_streaming(app, dim, player);
+    demo_update_landscape_streaming(app, dim, player);
     update_player_aim_ray(app, dim, player);
     if (update_network_state(app, dim, player)) {
         dim = world_get_dimension(&app->world, app->dimension_id);
@@ -2902,7 +3480,11 @@ bool demo_update_and_draw(DemoApp* app) {
 
 int demo_run_steam_host_smoke(double timeout_s, double hold_s) {
     write_smoke_log("STEAM_HOST_START timeout=%.2f hold=%.2f", timeout_s, hold_s);
+#if defined(OL_DISABLE_RAYLIB_LOGGING)
+    SetTraceLogLevel(LOG_NONE);
+#else
     SetTraceLogLevel(LOG_WARNING);
+#endif
     SetConfigFlags(FLAG_WINDOW_HIDDEN);
 
     auto* app = new DemoApp();
@@ -2943,7 +3525,11 @@ int demo_run_steam_host_smoke(double timeout_s, double hold_s) {
 
 int demo_run_steam_join_smoke(const char* lobby_id, double timeout_s) {
     write_smoke_log("STEAM_JOIN_START lobby=%s timeout=%.2f", lobby_id ? lobby_id : "", timeout_s);
+#if defined(OL_DISABLE_RAYLIB_LOGGING)
+    SetTraceLogLevel(LOG_NONE);
+#else
     SetTraceLogLevel(LOG_WARNING);
+#endif
     SetConfigFlags(FLAG_WINDOW_HIDDEN);
 
     auto* app = new DemoApp();

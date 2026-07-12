@@ -71,6 +71,9 @@ target_compile_definitions(ol_engine PUBLIC RAYMATH_DISABLE_CPP_OPERATORS)
 
 add_executable(ol ${OL_DEMO_SOURCES})
 target_link_libraries(ol PRIVATE ol_engine)
+target_compile_definitions(ol PRIVATE
+  "$<$<OR:$<CONFIG:Release>,$<CONFIG:MinSizeRel>,$<CONFIG:RelWithDebInfo>>:OL_DISABLE_RAYLIB_LOGGING>"
+)
 
 add_executable(ol_tests tests/engine_tests.cpp)
 target_sources(ol_tests PRIVATE src/demo/menu.cpp src/demo/demo.cpp)
@@ -80,7 +83,22 @@ enable_testing()
 add_test(NAME ol_tests_physics COMMAND ol_tests --physics)
 add_test(NAME ol_tests_visual COMMAND ol_tests --visual)
 add_test(NAME ol_tests_menu COMMAND ol_tests --menu)
-set_tests_properties(ol_tests_physics ol_tests_visual ol_tests_menu PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+add_test(NAME ol_tests_lighting_roundtrip COMMAND ol_tests --lighting-roundtrip)
+add_test(NAME ol_tests_lighting_routes_exhaustive COMMAND ol_tests --lighting-route-regression)
+add_test(NAME ol_tests_lighting_cave_pathtrace COMMAND ol_tests --lighting-cave-pathtrace)
+add_test(NAME ol_tests_lighting_cave_seam COMMAND ol_tests --lighting-cave-seam)
+add_test(NAME ol_tests_lighting_continuous_motion COMMAND ol_tests --lighting-continuous-motion)
+add_test(NAME ol_tests_cave_stationary COMMAND ol_tests --cave-stationary-regression)
+add_test(NAME ol_tests_cave_surface_distance COMMAND ol_tests --cave-surface-distance)
+set_tests_properties(ol_tests_physics ol_tests_visual ol_tests_menu ol_tests_lighting_roundtrip
+    ol_tests_lighting_routes_exhaustive ol_tests_lighting_cave_pathtrace ol_tests_lighting_cave_seam
+    ol_tests_lighting_continuous_motion ol_tests_cave_stationary ol_tests_cave_surface_distance
+    PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+set_tests_properties(ol_tests_lighting_routes_exhaustive ol_tests_lighting_cave_pathtrace
+    ol_tests_lighting_cave_seam ol_tests_lighting_continuous_motion ol_tests_cave_stationary
+    ol_tests_cave_surface_distance PROPERTIES
+    LABELS "exhaustive;lighting"
+    TIMEOUT 300)
 
 if (OL_USE_STEAMWORKS)
   if (NOT STEAMWORKS_SDK_DIR)

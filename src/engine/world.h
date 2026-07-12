@@ -6,6 +6,7 @@
 #include "raylib.h"
 
 #include <array>
+#include <unordered_map>
 #include <vector>
 
 namespace ol {
@@ -51,6 +52,11 @@ struct MaterialLayer {
     u32 fragment_shader_id = invalid_id;
     bool has_vertex_shader = false;
     u32 vertex_shader_id = invalid_id;
+    bool has_emission = false;
+    Color emission_color = WHITE;
+    float emission = 0.0f;
+    bool has_reflectivity = false;
+    float reflectivity = 0.0f;
 };
 
 struct MaterialStack {
@@ -88,14 +94,6 @@ struct SpriteInstance {
     bool visible = true;
 };
 
-struct LightSource {
-    char name[48]{};
-    WorldPos pos{};
-    Color color = WHITE;
-    float radius = 8.0f;
-    float intensity = 1.0f;
-};
-
 struct PaintedPixel {
     WorldPos center{};
     Vector3 normal = {0.0f, 1.0f, 0.0f};
@@ -115,8 +113,26 @@ struct Chunk {
     std::array<u32, max_mesh_refs_per_chunk> meshes{};
     u32 sprite_count = 0;
     std::array<u32, max_sprite_refs_per_chunk> sprites{};
-    u32 light_count = 0;
-    std::array<u32, max_light_refs_per_chunk> lights{};
+};
+
+struct ChunkCoordHash {
+    size_t operator()(const ChunkCoord& coord) const noexcept {
+        u64 hash = 1469598103934665603ull;
+        auto add = [&](u32 value) {
+            hash ^= value;
+            hash *= 1099511628211ull;
+        };
+        add(static_cast<u32>(coord.x));
+        add(static_cast<u32>(coord.y));
+        add(static_cast<u32>(coord.z));
+        return static_cast<size_t>(hash);
+    }
+};
+
+struct ChunkCoordEqual {
+    bool operator()(const ChunkCoord& a, const ChunkCoord& b) const noexcept {
+        return a.x == b.x && a.y == b.y && a.z == b.z;
+    }
 };
 
 struct PlayerEntity {
@@ -158,13 +174,14 @@ struct Dimension {
     Color fog_color = {182, 204, 222, 255};
 
     Arena<max_chunks, Chunk> chunks{};
+    std::unordered_map<ChunkCoord, u32, ChunkCoordHash, ChunkCoordEqual> chunk_lookup{};
     Arena<max_mesh_geometries, MeshGeometry> geometries{};
     Arena<max_meshes, MeshInstance> meshes{};
     Arena<max_sprites, SpriteInstance> sprites{};
-    Arena<max_lights, LightSource> lights{};
     Arena<max_players, PlayerEntity> players{};
     std::vector<PaintedPixel> painted_pixels{};
     u64 paint_revision = 1;
+    u64 mesh_topology_revision = 1;
     PhysicsWorld physics{};
 };
 
@@ -182,7 +199,6 @@ u32 dimension_get_or_add_chunk(Dimension* dim, ChunkCoord coord);
 u32 dimension_add_geometry(Dimension* dim, const MeshGeometry& geometry);
 u32 dimension_add_mesh(Dimension* dim, MeshInstance mesh);
 u32 dimension_add_sprite(Dimension* dim, SpriteInstance sprite);
-u32 dimension_add_light(Dimension* dim, LightSource light);
 bool dimension_paint_pixel(Dimension* dim, PaintedPixel pixel);
 u32 dimension_erase_pixels(Dimension* dim, const PaintedPixel& target, float radius_pixels);
 bool dimension_remove_mesh(Dimension* dim, u32 mesh_id);
@@ -192,6 +208,8 @@ MeshGeometry make_box_geometry(const char* name, Vector3 size);
 MeshGeometry make_wedge_geometry(const char* name, Vector3 size);
 void material_stack_push(MaterialStack* stack, MaterialLayer layer);
 Color resolve_mesh_color(const MeshInstance* mesh);
+Vector3 resolve_mesh_emission(const MeshInstance* mesh);
+float resolve_mesh_reflectivity(const MeshInstance* mesh);
 WorldPos player_feet_pos(const Dimension* dim, const PlayerEntity* player);
 WorldPos player_eye_pos(const Dimension* dim, const PlayerEntity* player);
 

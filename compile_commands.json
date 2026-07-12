@@ -55,6 +55,30 @@
 },
 {
   "directory": "E:/cool/projects2/raylib/ol/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DGRAPHICS_API_OPENGL_43 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\ol\\src -IE:\\cool\\projects2\\raylib\\ol\\build -IE:\\cool\\projects2\\raylib\\ol\\build\\_deps\\raylib-src\\src /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /FoCMakeFiles\\ol_engine.dir\\res_pathtrace_comparison_frag.c.obj /FdCMakeFiles\\ol_engine.dir\\ol_engine.pdb -c -- E:\\cool\\projects2\\raylib\\ol\\build\\res_pathtrace_comparison_frag.c",
+  "file": "E:\\cool\\projects2\\raylib\\ol\\build\\res_pathtrace_comparison_frag.c",
+  "output": "CMakeFiles\\ol_engine.dir\\res_pathtrace_comparison_frag.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/ol/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DGRAPHICS_API_OPENGL_43 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\ol\\src -IE:\\cool\\projects2\\raylib\\ol\\build -IE:\\cool\\projects2\\raylib\\ol\\build\\_deps\\raylib-src\\src /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /FoCMakeFiles\\ol_engine.dir\\res_radiance_cascade_frag.c.obj /FdCMakeFiles\\ol_engine.dir\\ol_engine.pdb -c -- E:\\cool\\projects2\\raylib\\ol\\build\\res_radiance_cascade_frag.c",
+  "file": "E:\\cool\\projects2\\raylib\\ol\\build\\res_radiance_cascade_frag.c",
+  "output": "CMakeFiles\\ol_engine.dir\\res_radiance_cascade_frag.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/ol/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DGRAPHICS_API_OPENGL_43 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\ol\\src -IE:\\cool\\projects2\\raylib\\ol\\build -IE:\\cool\\projects2\\raylib\\ol\\build\\_deps\\raylib-src\\src /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /FoCMakeFiles\\ol_engine.dir\\res_surface_lighting_frag.c.obj /FdCMakeFiles\\ol_engine.dir\\ol_engine.pdb -c -- E:\\cool\\projects2\\raylib\\ol\\build\\res_surface_lighting_frag.c",
+  "file": "E:\\cool\\projects2\\raylib\\ol\\build\\res_surface_lighting_frag.c",
+  "output": "CMakeFiles\\ol_engine.dir\\res_surface_lighting_frag.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/ol/build",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DGRAPHICS_API_OPENGL_43 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\ol\\src -IE:\\cool\\projects2\\raylib\\ol\\build -IE:\\cool\\projects2\\raylib\\ol\\build\\_deps\\raylib-src\\src /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /FoCMakeFiles\\ol_engine.dir\\res_surface_shadow_composite_frag.c.obj /FdCMakeFiles\\ol_engine.dir\\ol_engine.pdb -c -- E:\\cool\\projects2\\raylib\\ol\\build\\res_surface_shadow_composite_frag.c",
+  "file": "E:\\cool\\projects2\\raylib\\ol\\build\\res_surface_shadow_composite_frag.c",
+  "output": "CMakeFiles\\ol_engine.dir\\res_surface_shadow_composite_frag.c.obj"
+},
+{
+  "directory": "E:/cool/projects2/raylib/ol/build",
   "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -DGRAPHICS_API_OPENGL_43 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\ol\\src -IE:\\cool\\projects2\\raylib\\ol\\build -IE:\\cool\\projects2\\raylib\\ol\\build\\_deps\\raylib-src\\src /DWIN32 /D_WINDOWS /O2 /Ob2 /DNDEBUG -MD /FoCMakeFiles\\ol_engine.dir\\resources.c.obj /FdCMakeFiles\\ol_engine.dir\\ol_engine.pdb -c -- E:\\cool\\projects2\\raylib\\ol\\build\\resources.c",
   "file": "E:\\cool\\projects2\\raylib\\ol\\build\\resources.c",
   "output": "CMakeFiles\\ol_engine.dir\\resources.c.obj"
@@ -67,19 +91,19 @@
 },
 {
   "directory": "E:/cool/projects2/raylib/ol/build",
-  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DGRAPHICS_API_OPENGL_43 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\ol\\src -IE:\\cool\\projects2\\raylib\\ol\\build\\_deps\\raylib-src\\src /DWIN32 /D_WINDOWS /GR /EHsc /O2 /Ob2 /DNDEBUG -std:c++20 -MD /utf-8 /EHsc /FoCMakeFiles\\ol.dir\\src\\demo\\menu.cpp.obj /FdCMakeFiles\\ol.dir\\ -c -- E:\\cool\\projects2\\raylib\\ol\\src\\demo\\menu.cpp",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DGRAPHICS_API_OPENGL_43 -DOL_DISABLE_RAYLIB_LOGGING -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\ol\\src -IE:\\cool\\projects2\\raylib\\ol\\build\\_deps\\raylib-src\\src /DWIN32 /D_WINDOWS /GR /EHsc /O2 /Ob2 /DNDEBUG -std:c++20 -MD /utf-8 /EHsc /FoCMakeFiles\\ol.dir\\src\\demo\\menu.cpp.obj /FdCMakeFiles\\ol.dir\\ -c -- E:\\cool\\projects2\\raylib\\ol\\src\\demo\\menu.cpp",
   "file": "E:\\cool\\projects2\\raylib\\ol\\src\\demo\\menu.cpp",
   "output": "CMakeFiles\\ol.dir\\src\\demo\\menu.cpp.obj"
 },
 {
   "directory": "E:/cool/projects2/raylib/ol/build",
-  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DGRAPHICS_API_OPENGL_43 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\ol\\src -IE:\\cool\\projects2\\raylib\\ol\\build\\_deps\\raylib-src\\src /DWIN32 /D_WINDOWS /GR /EHsc /O2 /Ob2 /DNDEBUG -std:c++20 -MD /utf-8 /EHsc /FoCMakeFiles\\ol.dir\\src\\demo\\demo.cpp.obj /FdCMakeFiles\\ol.dir\\ -c -- E:\\cool\\projects2\\raylib\\ol\\src\\demo\\demo.cpp",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DGRAPHICS_API_OPENGL_43 -DOL_DISABLE_RAYLIB_LOGGING -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\ol\\src -IE:\\cool\\projects2\\raylib\\ol\\build\\_deps\\raylib-src\\src /DWIN32 /D_WINDOWS /GR /EHsc /O2 /Ob2 /DNDEBUG -std:c++20 -MD /utf-8 /EHsc /FoCMakeFiles\\ol.dir\\src\\demo\\demo.cpp.obj /FdCMakeFiles\\ol.dir\\ -c -- E:\\cool\\projects2\\raylib\\ol\\src\\demo\\demo.cpp",
   "file": "E:\\cool\\projects2\\raylib\\ol\\src\\demo\\demo.cpp",
   "output": "CMakeFiles\\ol.dir\\src\\demo\\demo.cpp.obj"
 },
 {
   "directory": "E:/cool/projects2/raylib/ol/build",
-  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DGRAPHICS_API_OPENGL_43 -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\ol\\src -IE:\\cool\\projects2\\raylib\\ol\\build\\_deps\\raylib-src\\src /DWIN32 /D_WINDOWS /GR /EHsc /O2 /Ob2 /DNDEBUG -std:c++20 -MD /utf-8 /EHsc /FoCMakeFiles\\ol.dir\\src\\demo\\main.cpp.obj /FdCMakeFiles\\ol.dir\\ -c -- E:\\cool\\projects2\\raylib\\ol\\src\\demo\\main.cpp",
+  "command": "C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\Llvm\\x64\\bin\\clang-cl.exe  /nologo -TP -DGRAPHICS_API_OPENGL_43 -DOL_DISABLE_RAYLIB_LOGGING -DPLATFORM_DESKTOP -DRAYMATH_DISABLE_CPP_OPERATORS -D_CRT_SECURE_NO_WARNINGS -IE:\\cool\\projects2\\raylib\\ol\\src -IE:\\cool\\projects2\\raylib\\ol\\build\\_deps\\raylib-src\\src /DWIN32 /D_WINDOWS /GR /EHsc /O2 /Ob2 /DNDEBUG -std:c++20 -MD /utf-8 /EHsc /FoCMakeFiles\\ol.dir\\src\\demo\\main.cpp.obj /FdCMakeFiles\\ol.dir\\ -c -- E:\\cool\\projects2\\raylib\\ol\\src\\demo\\main.cpp",
   "file": "E:\\cool\\projects2\\raylib\\ol\\src\\demo\\main.cpp",
   "output": "CMakeFiles\\ol.dir\\src\\demo\\main.cpp.obj"
 },

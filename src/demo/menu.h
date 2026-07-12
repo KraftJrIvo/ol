@@ -9,6 +9,8 @@ constexpr u32 max_visible_session_rows = 5;
 constexpr u32 max_visible_world_rows = 4;
 constexpr int pause_render_radius_min = 2;
 constexpr int pause_render_radius_max = 32;
+constexpr int pause_lighting_radius_min = 1;
+constexpr int pause_lighting_radius_max = 4;
 
 enum MenuInputField : u32 {
     menu_input_none,
@@ -38,8 +40,17 @@ enum PauseControl : u32 {
     pause_control_fov,
     pause_control_scale,
     pause_control_render_radius,
+    pause_control_lighting_probe_levels,
+    pause_control_lighting_iterations,
+    pause_control_lighting_indirect_samples,
+    pause_control_lighting_shadow_samples,
+    pause_control_lighting_temporal_frames,
+    pause_control_lighting_radius,
     pause_control_fullscreen,
     pause_control_fps_counter,
+    pause_control_lighting_enabled,
+    pause_control_lighting_jitter,
+    pause_control_lighting_corner_merge,
     pause_control_continue,
     pause_control_first_menu
 };
@@ -71,6 +82,7 @@ struct PauseScreen {
     int render_radius = 6;
     bool fullscreen = false;
     bool show_fps = false;
+    RadianceCascadeSettings lighting{};
 };
 
 struct MenuHit {

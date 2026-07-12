@@ -21,7 +21,6 @@ constexpr u32 max_chunks = 8192;
 constexpr u32 max_mesh_geometries = 256;
 constexpr u32 max_meshes = 32768;
 constexpr u32 max_sprites = 1024;
-constexpr u32 max_lights = 512;
 constexpr u32 max_material_layers = 8;
 constexpr u32 max_players = 16;
 constexpr u32 max_saved_painted_pixels = 262144;
@@ -33,7 +32,6 @@ constexpr u32 max_render_edges = 65536;
 
 constexpr u32 max_mesh_refs_per_chunk = 96;
 constexpr u32 max_sprite_refs_per_chunk = 64;
-constexpr u32 max_light_refs_per_chunk = 32;
 
 constexpr u32 max_point_masses = 2048;
 constexpr u32 max_links = 2048;

@@ -7,17 +7,37 @@ partial behavior, or first-pass demo code.
 
 - Real skyboxes per dimension. Current code has gradient sky colors only.
 - Proper fog volume. Current fog is per-object/per-chunk color mixing, not depth fog.
-- Real ambient+diffuse shader path for meshes and sprites. Current mesh lighting is
-  CPU face shading; sprites are flat billboards.
+- Sprite participation in radiance-cascade lighting. Mesh lighting is evaluated at
+  world-surface texel resolution; sprites remain flat texture billboards.
 - Imported texture and normal-map assets. Procedural nearest-neighbor world textures,
   meter-scaled planar UVs, sprites, and shared painted texels are implemented; a
   general asset table and normal-map shader path are still pending.
 - Custom vertex/fragment shaders per mesh/sprite. Fields exist, but shader loading
   and binding are not implemented.
-- Material stacking beyond color override. Stack data exists, but only color is
-  resolved.
-- Correct light gathering from nearby chunks by light radius. Current renderer scans
-  all lights in the dimension.
+- Material stacking beyond color, emission, and reflectivity resolution. Stack
+  texture/shader/normal overrides are not yet resolved.
+- A chunk/TLAS lighting accelerator and general BVH refit path. Exact transformed
+  non-emissive triangles currently use a cached static BVH, players use a small
+  per-frame dynamic BVH, and moving emissive meshes use a compact non-occluding
+  triangle/CDF buffer without rebuilding the static region. The static scene still
+  has a guarded triangle cap.
+- Batched surface-lighting storage and dispatch. The renderer currently caches common
+  uniforms/SSBO bindings, keeps stable filtered color separate from a persistent R8
+  dynamic-shadow mask, and repairs carried anchor textures over visible L0 regions,
+  but each face is still an individual framebuffer target. A lightmap atlas or
+  texture array with tiled compute dispatch is future work. Production currently
+  prewarms exact target-anchor surfaces only during movement and only after emitter
+  signatures stay stable for two frames, bounded to 64K texels/eight allocations per
+  frame. The forced-prewarm switch remains false by default; it measured worse with
+  animated cave emitters and exists only to exercise that A/B path. Cave's changing
+  emitters do not trigger automatic surface preparation.
+- A compact spherical-harmonic irradiance/probe representation. The current RC path
+  still stores directional radiance/occlusion in its atlas; SH irradiance has only
+  been identified as a possible future bandwidth and batching improvement.
+- Normal RC reflected and indirect ray hits currently use the hit mesh's resolved
+  flat color. The optional full-frame reference carries authored planar UVs in its
+  separate triangles, but painted pixels reached by a secondary ray still need a
+  GPU paint-atlas indirection.
 - Real LOD generation/selection. A mesh can reference one LOD mesh, but there is no
   tool/import pipeline, streaming policy, or per-material LOD behavior.
 - Custom shader sprite paths are not complete.
@@ -25,11 +45,12 @@ partial behavior, or first-pass demo code.
 
 ## World And Editing
 
-- Runtime creation/deletion of dimensions, chunks, meshes, sprites, lights, and
+- Runtime creation/deletion of dimensions, chunks, meshes, sprites, materials, and
   colliders by players. Data layout anticipates this, but there is no editor protocol
   or UI.
-- Chunk streaming/unloading. Chunks are fixed arena records and generated eagerly in
-  the demo.
+- General-purpose chunk streaming for arbitrary edited worlds. The procedural hills
+  demo has velocity-directed prefetch and bounded incremental load/unload commits,
+  but other dimensions still generate eagerly.
 - Cross-chunk object bounds. Objects are assigned by origin chunk only.
 - Dimension persistence. Session naming exists in UI, but saving/loading world state
   is not implemented.

@@ -9,8 +9,12 @@ namespace {
 
 constexpr float menu_base_w = 900.0f;
 constexpr float menu_base_h = 640.0f;
-constexpr float pause_base_w = 760.0f;
-constexpr float pause_base_h = 640.0f;
+constexpr float pause_base_w = 1100.0f;
+constexpr float pause_base_h = 730.0f;
+
+constexpr int indirect_sample_options[] = {4, 8, 16, 32, 64};
+constexpr int shadow_sample_options[] = {1, 2, 4, 8, 16};
+constexpr int temporal_frame_options[] = {0, 4, 16, 64, 256};
 
 struct MenuLayout {
     float scale = 1.0f;
@@ -37,8 +41,17 @@ struct PauseLayout {
     Rectangle fov_slider{};
     Rectangle scale_slider{};
     Rectangle render_radius_slider{};
+    Rectangle lighting_probe_slider{};
+    Rectangle lighting_iterations_slider{};
+    Rectangle lighting_indirect_slider{};
+    Rectangle lighting_shadow_slider{};
+    Rectangle lighting_temporal_slider{};
+    Rectangle lighting_radius_slider{};
     Rectangle fullscreen_button{};
     Rectangle fps_counter_button{};
+    Rectangle lighting_enabled_button{};
+    Rectangle lighting_jitter_button{};
+    Rectangle lighting_corner_button{};
     Rectangle continue_button{};
     Rectangle first_menu_button{};
 };
@@ -99,13 +112,24 @@ static PauseLayout make_pause_layout() {
         (screen_w - pause_base_w * layout.scale) * 0.5f,
         (screen_h - pause_base_h * layout.scale) * 0.5f
     };
-    layout.fov_slider = scaled_rect(layout.origin, layout.scale, {150.0f, 105.0f, 460.0f, 8.0f});
-    layout.scale_slider = scaled_rect(layout.origin, layout.scale, {150.0f, 200.0f, 460.0f, 8.0f});
-    layout.render_radius_slider = scaled_rect(layout.origin, layout.scale, {150.0f, 295.0f, 460.0f, 8.0f});
-    layout.fullscreen_button = scaled_rect(layout.origin, layout.scale, {150.0f, 380.0f, 205.0f, 56.0f});
-    layout.fps_counter_button = scaled_rect(layout.origin, layout.scale, {405.0f, 380.0f, 205.0f, 56.0f});
-    layout.continue_button = scaled_rect(layout.origin, layout.scale, {150.0f, 490.0f, 205.0f, 56.0f});
-    layout.first_menu_button = scaled_rect(layout.origin, layout.scale, {405.0f, 490.0f, 205.0f, 56.0f});
+    layout.fov_slider = scaled_rect(layout.origin, layout.scale, {70.0f, 100.0f, 400.0f, 8.0f});
+    layout.scale_slider = scaled_rect(layout.origin, layout.scale, {70.0f, 200.0f, 400.0f, 8.0f});
+    layout.render_radius_slider = scaled_rect(layout.origin, layout.scale, {70.0f, 300.0f, 400.0f, 8.0f});
+    layout.fullscreen_button = scaled_rect(layout.origin, layout.scale, {70.0f, 385.0f, 190.0f, 52.0f});
+    layout.fps_counter_button = scaled_rect(layout.origin, layout.scale, {280.0f, 385.0f, 190.0f, 52.0f});
+
+    layout.lighting_probe_slider = scaled_rect(layout.origin, layout.scale, {630.0f, 90.0f, 400.0f, 8.0f});
+    layout.lighting_iterations_slider = scaled_rect(layout.origin, layout.scale, {630.0f, 170.0f, 400.0f, 8.0f});
+    layout.lighting_indirect_slider = scaled_rect(layout.origin, layout.scale, {630.0f, 250.0f, 400.0f, 8.0f});
+    layout.lighting_shadow_slider = scaled_rect(layout.origin, layout.scale, {630.0f, 330.0f, 400.0f, 8.0f});
+    layout.lighting_temporal_slider = scaled_rect(layout.origin, layout.scale, {630.0f, 410.0f, 400.0f, 8.0f});
+    layout.lighting_radius_slider = scaled_rect(layout.origin, layout.scale, {630.0f, 490.0f, 400.0f, 8.0f});
+    layout.lighting_enabled_button = scaled_rect(layout.origin, layout.scale, {630.0f, 535.0f, 125.0f, 52.0f});
+    layout.lighting_jitter_button = scaled_rect(layout.origin, layout.scale, {767.0f, 535.0f, 125.0f, 52.0f});
+    layout.lighting_corner_button = scaled_rect(layout.origin, layout.scale, {904.0f, 535.0f, 126.0f, 52.0f});
+
+    layout.continue_button = scaled_rect(layout.origin, layout.scale, {70.0f, 640.0f, 400.0f, 58.0f});
+    layout.first_menu_button = scaled_rect(layout.origin, layout.scale, {630.0f, 640.0f, 400.0f, 58.0f});
     return layout;
 }
 
@@ -228,6 +252,51 @@ static void draw_slider(RenderState* renderer, Rectangle track, const char* labe
     const Vector2 thumb = {track.x + track.width * clampf(t, 0.0f, 1.0f), track.y + track.height * 0.5f};
     DrawCircleV(thumb, 11.0f * (track.height / 8.0f), BLACK);
     DrawCircleLinesV(thumb, 11.0f * (track.height / 8.0f), WHITE);
+}
+
+template <size_t N>
+static int closest_option_index(int value, const int (&options)[N]) {
+    int best = 0;
+    int best_distance = std::abs(value - options[0]);
+    for (size_t i = 1; i < N; ++i) {
+        const int distance = std::abs(value - options[i]);
+        if (distance < best_distance) {
+            best = static_cast<int>(i);
+            best_distance = distance;
+        }
+    }
+    return best;
+}
+
+static void draw_choice_slider(
+    RenderState* renderer,
+    Rectangle track,
+    const char* label,
+    const char* value,
+    int option_index,
+    int option_count,
+    Color accent
+) {
+    const float unit = track.height / 8.0f;
+    char text[64]{};
+    std::snprintf(text, sizeof(text), "%s %s", label, value);
+    draw_ui_text(renderer, text, {track.x, track.y - 30.0f * unit}, 21.0f * unit, WHITE);
+
+    const float t = option_count > 1
+        ? clampf(static_cast<float>(option_index) / static_cast<float>(option_count - 1), 0.0f, 1.0f)
+        : 0.0f;
+    DrawRectangleRounded(track, 0.8f, 8, Color{76, 82, 92, 255});
+    DrawRectangleRounded({track.x, track.y, track.width * t, track.height}, 0.8f, 8, accent);
+    for (int i = 0; i < option_count; ++i) {
+        const float tick_t = option_count > 1 ? static_cast<float>(i) / static_cast<float>(option_count - 1) : 0.0f;
+        DrawCircleV(
+            {track.x + track.width * tick_t, track.y + track.height * 0.5f},
+            (i == option_index ? 3.0f : 1.5f) * unit,
+            i == option_index ? WHITE : Color{176, 183, 194, 255});
+    }
+    const Vector2 thumb = {track.x + track.width * t, track.y + track.height * 0.5f};
+    DrawCircleV(thumb, 9.0f * unit, BLACK);
+    DrawCircleLinesV(thumb, 9.0f * unit, WHITE);
 }
 
 static int color_component(Color color, u32 control) {
@@ -468,6 +537,19 @@ int demo_menu_color_value_from_mouse(u32 control, Vector2 mouse) {
 static void draw_pause_controls(const PauseScreen& pause) {
     const PauseLayout layout = make_pause_layout();
 
+    draw_ui_text(
+        pause.renderer,
+        "DISPLAY",
+        scaled_point(layout.origin, layout.scale, {70.0f, 25.0f}),
+        24.0f * layout.scale,
+        Color{170, 187, 207, 255});
+    draw_ui_text(
+        pause.renderer,
+        "RADIANCE CASCADES",
+        scaled_point(layout.origin, layout.scale, {630.0f, 25.0f}),
+        24.0f * layout.scale,
+        Color{190, 174, 224, 255});
+
     draw_slider(pause.renderer, layout.fov_slider, "fov", pause.fov, 60, 120, Color{86, 167, 255, 255});
 
     char scale_label[32]{};
@@ -489,9 +571,60 @@ static void draw_pause_controls(const PauseScreen& pause) {
         pause_render_radius_max,
         Color{226, 183, 91, 255});
 
+    char probe_value[16]{};
+    const int probe_index = static_cast<int>(clampf(static_cast<float>(pause.lighting.probe_extra_levels), 0.0f, 2.0f));
+    std::snprintf(probe_value, sizeof(probe_value), "%d^3", 8 << probe_index);
+    draw_choice_slider(
+        pause.renderer, layout.lighting_probe_slider, "finest probes", probe_value,
+        probe_index, 3, Color{174, 112, 231, 255});
+
+    char iteration_value[16]{};
+    const int iterations = static_cast<int>(clampf(static_cast<float>(pause.lighting.cascade_iterations), 1.0f, 3.0f));
+    std::snprintf(iteration_value, sizeof(iteration_value), "%d", iterations);
+    draw_choice_slider(
+        pause.renderer, layout.lighting_iterations_slider, "cascade passes", iteration_value,
+        iterations - 1, 3, Color{154, 122, 230, 255});
+
+    char indirect_value[16]{};
+    const int indirect_index = closest_option_index(pause.lighting.indirect_samples, indirect_sample_options);
+    std::snprintf(indirect_value, sizeof(indirect_value), "%d", indirect_sample_options[indirect_index]);
+    draw_choice_slider(
+        pause.renderer, layout.lighting_indirect_slider, "indirect rays", indirect_value,
+        indirect_index, 5, Color{116, 153, 236, 255});
+
+    char shadow_value[16]{};
+    const int shadow_index = closest_option_index(pause.lighting.shadow_samples, shadow_sample_options);
+    std::snprintf(shadow_value, sizeof(shadow_value), "%d", shadow_sample_options[shadow_index]);
+    draw_choice_slider(
+        pause.renderer, layout.lighting_shadow_slider, "shadow rays", shadow_value,
+        shadow_index, 5, Color{89, 180, 230, 255});
+
+    char temporal_value[16]{};
+    const int temporal_index = closest_option_index(pause.lighting.temporal_frames, temporal_frame_options);
+    if (temporal_frame_options[temporal_index] == 0) std::snprintf(temporal_value, sizeof(temporal_value), "off");
+    else std::snprintf(temporal_value, sizeof(temporal_value), "%d", temporal_frame_options[temporal_index]);
+    draw_choice_slider(
+        pause.renderer, layout.lighting_temporal_slider, "temporal frames", temporal_value,
+        temporal_index, 5, Color{89, 199, 195, 255});
+
+    char lighting_radius_value[16]{};
+    const int lighting_radius = static_cast<int>(clampf(
+        static_cast<float>(pause.lighting.lighting_radius_chunks),
+        static_cast<float>(pause_lighting_radius_min),
+        static_cast<float>(pause_lighting_radius_max)));
+    std::snprintf(lighting_radius_value, sizeof(lighting_radius_value), "%d", lighting_radius);
+    draw_choice_slider(
+        pause.renderer, layout.lighting_radius_slider, "lighting radius", lighting_radius_value,
+        lighting_radius - pause_lighting_radius_min,
+        pause_lighting_radius_max - pause_lighting_radius_min + 1,
+        Color{103, 218, 151, 255});
+
     const Vector2 mouse = GetMousePosition();
     draw_toggle_button(pause.renderer, layout.fullscreen_button, "fullscreen", pause.fullscreen, point_in_rect(mouse, layout.fullscreen_button));
     draw_toggle_button(pause.renderer, layout.fps_counter_button, "fps", pause.show_fps, point_in_rect(mouse, layout.fps_counter_button));
+    draw_toggle_button(pause.renderer, layout.lighting_enabled_button, "light", pause.lighting.enabled, point_in_rect(mouse, layout.lighting_enabled_button));
+    draw_toggle_button(pause.renderer, layout.lighting_jitter_button, "jitter", pause.lighting.jitter, point_in_rect(mouse, layout.lighting_jitter_button));
+    draw_toggle_button(pause.renderer, layout.lighting_corner_button, "corners", pause.lighting.corner_merge, point_in_rect(mouse, layout.lighting_corner_button));
     draw_button(pause.renderer, layout.continue_button, "continue", point_in_rect(mouse, layout.continue_button));
     draw_button(pause.renderer, layout.first_menu_button, "leave", point_in_rect(mouse, layout.first_menu_button));
 }
@@ -521,8 +654,17 @@ PauseHit demo_pause_hit_test(Vector2 mouse) {
     if (point_in_rect(mouse, slider_hit_rect(layout.fov_slider))) return {pause_control_fov};
     if (point_in_rect(mouse, slider_hit_rect(layout.scale_slider))) return {pause_control_scale};
     if (point_in_rect(mouse, slider_hit_rect(layout.render_radius_slider))) return {pause_control_render_radius};
+    if (point_in_rect(mouse, slider_hit_rect(layout.lighting_probe_slider))) return {pause_control_lighting_probe_levels};
+    if (point_in_rect(mouse, slider_hit_rect(layout.lighting_iterations_slider))) return {pause_control_lighting_iterations};
+    if (point_in_rect(mouse, slider_hit_rect(layout.lighting_indirect_slider))) return {pause_control_lighting_indirect_samples};
+    if (point_in_rect(mouse, slider_hit_rect(layout.lighting_shadow_slider))) return {pause_control_lighting_shadow_samples};
+    if (point_in_rect(mouse, slider_hit_rect(layout.lighting_temporal_slider))) return {pause_control_lighting_temporal_frames};
+    if (point_in_rect(mouse, slider_hit_rect(layout.lighting_radius_slider))) return {pause_control_lighting_radius};
     if (point_in_rect(mouse, layout.fullscreen_button)) return {pause_control_fullscreen};
     if (point_in_rect(mouse, layout.fps_counter_button)) return {pause_control_fps_counter};
+    if (point_in_rect(mouse, layout.lighting_enabled_button)) return {pause_control_lighting_enabled};
+    if (point_in_rect(mouse, layout.lighting_jitter_button)) return {pause_control_lighting_jitter};
+    if (point_in_rect(mouse, layout.lighting_corner_button)) return {pause_control_lighting_corner_merge};
     if (point_in_rect(mouse, layout.continue_button)) return {pause_control_continue};
     if (point_in_rect(mouse, layout.first_menu_button)) return {pause_control_first_menu};
     return {};
@@ -533,6 +675,21 @@ int demo_pause_value_from_mouse(u32 control, Vector2 mouse) {
     if (control == pause_control_fov) return value_from_slider(layout.fov_slider, mouse, 60, 120, true);
     if (control == pause_control_scale) return value_from_slider(layout.scale_slider, mouse, 0, 4, true);
     if (control == pause_control_render_radius) return value_from_slider(layout.render_radius_slider, mouse, pause_render_radius_min, pause_render_radius_max, true);
+    if (control == pause_control_lighting_probe_levels) return value_from_slider(layout.lighting_probe_slider, mouse, 0, 2, true);
+    if (control == pause_control_lighting_iterations) return value_from_slider(layout.lighting_iterations_slider, mouse, 1, 3, true);
+    if (control == pause_control_lighting_indirect_samples) {
+        return indirect_sample_options[value_from_slider(layout.lighting_indirect_slider, mouse, 0, 4, true)];
+    }
+    if (control == pause_control_lighting_shadow_samples) {
+        return shadow_sample_options[value_from_slider(layout.lighting_shadow_slider, mouse, 0, 4, true)];
+    }
+    if (control == pause_control_lighting_temporal_frames) {
+        return temporal_frame_options[value_from_slider(layout.lighting_temporal_slider, mouse, 0, 4, true)];
+    }
+    if (control == pause_control_lighting_radius) {
+        return value_from_slider(
+            layout.lighting_radius_slider, mouse, pause_lighting_radius_min, pause_lighting_radius_max, true);
+    }
     return 0;
 }
 

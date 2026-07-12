@@ -2,6 +2,7 @@
 
 #include "engine/player_controller.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -24,13 +25,14 @@ u32 world_add_dimension(World* world, const char* name, float chunk_size_m, floa
 
     Dimension* dim = arena_get(&world->dimensions, id);
     arena_clear(&dim->chunks);
+    dim->chunk_lookup.clear();
     arena_clear(&dim->geometries);
     arena_clear(&dim->meshes);
     arena_clear(&dim->sprites);
-    arena_clear(&dim->lights);
     arena_clear(&dim->players);
     dim->painted_pixels.clear();
     dim->paint_revision = ++next_paint_revision;
+    dim->mesh_topology_revision = 1;
 
     copy_name(dim->name, sizeof(dim->name), name);
     dim->chunk_size_m = chunk_size_m;
@@ -55,12 +57,12 @@ const Dimension* world_get_dimension(const World* world, u32 dimension_id) {
 }
 
 u32 dimension_find_chunk(const Dimension* dim, ChunkCoord coord) {
-    for (u32 slot = 0; slot < dim->chunks.count; ++slot) {
-        if (chunk_equal(dim->chunks.data[slot].coord, coord)) {
-            return arena_id_at_slot(&dim->chunks, slot);
-        }
+    if (!dim) return invalid_id;
+    const auto found = dim->chunk_lookup.find(coord);
+    if (found == dim->chunk_lookup.end() || !arena_has(&dim->chunks, found->second)) {
+        return invalid_id;
     }
-    return invalid_id;
+    return found->second;
 }
 
 u32 dimension_get_or_add_chunk(Dimension* dim, ChunkCoord coord) {
@@ -71,8 +73,9 @@ u32 dimension_get_or_add_chunk(Dimension* dim, ChunkCoord coord) {
     chunk.coord = coord;
     chunk.meshes.fill(invalid_id);
     chunk.sprites.fill(invalid_id);
-    chunk.lights.fill(invalid_id);
-    return arena_acquire(&dim->chunks, chunk);
+    const u32 id = arena_acquire(&dim->chunks, chunk);
+    if (id_valid(id)) dim->chunk_lookup[coord] = id;
+    return id;
 }
 
 static void chunk_add_mesh_ref(Chunk* chunk, u32 id) {
@@ -84,12 +87,6 @@ static void chunk_add_mesh_ref(Chunk* chunk, u32 id) {
 static void chunk_add_sprite_ref(Chunk* chunk, u32 id) {
     if (chunk->sprite_count < max_sprite_refs_per_chunk) {
         chunk->sprites[chunk->sprite_count++] = id;
-    }
-}
-
-static void chunk_add_light_ref(Chunk* chunk, u32 id) {
-    if (chunk->light_count < max_light_refs_per_chunk) {
-        chunk->lights[chunk->light_count++] = id;
     }
 }
 
@@ -114,6 +111,7 @@ u32 dimension_add_mesh(Dimension* dim, MeshInstance mesh) {
     canonicalize(&mesh.origin, dim->chunk_size_m);
     const u32 id = arena_acquire(&dim->meshes, mesh);
     if (!id_valid(id)) return invalid_id;
+    ++dim->mesh_topology_revision;
 
     const u32 chunk_id = dimension_get_or_add_chunk(dim, mesh.origin.chunk);
     Chunk* chunk = arena_get(&dim->chunks, chunk_id);
@@ -129,17 +127,6 @@ u32 dimension_add_sprite(Dimension* dim, SpriteInstance sprite) {
     const u32 chunk_id = dimension_get_or_add_chunk(dim, sprite.origin.chunk);
     Chunk* chunk = arena_get(&dim->chunks, chunk_id);
     if (chunk) chunk_add_sprite_ref(chunk, id);
-    return id;
-}
-
-u32 dimension_add_light(Dimension* dim, LightSource light) {
-    canonicalize(&light.pos, dim->chunk_size_m);
-    const u32 id = arena_acquire(&dim->lights, light);
-    if (!id_valid(id)) return invalid_id;
-
-    const u32 chunk_id = dimension_get_or_add_chunk(dim, light.pos.chunk);
-    Chunk* chunk = arena_get(&dim->chunks, chunk_id);
-    if (chunk) chunk_add_light_ref(chunk, id);
     return id;
 }
 
@@ -212,7 +199,7 @@ bool dimension_remove_mesh(Dimension* dim, u32 mesh_id) {
     for (u32 slot = 0; slot < dim->chunks.count; ++slot) {
         Chunk* chunk = &dim->chunks.data[slot];
         if (chunk_remove_ref(chunk->meshes.data(), &chunk->mesh_count, mesh_id)) {
-            if (chunk->mesh_count == 0 && chunk->sprite_count == 0 && chunk->light_count == 0) {
+            if (chunk->mesh_count == 0 && chunk->sprite_count == 0) {
                 empty_chunk_id = arena_id_at_slot(&dim->chunks, slot);
             }
             break;
@@ -220,7 +207,11 @@ bool dimension_remove_mesh(Dimension* dim, u32 mesh_id) {
     }
 
     const bool removed = arena_remove(&dim->meshes, mesh_id);
+    if (removed) ++dim->mesh_topology_revision;
     if (removed && id_valid(empty_chunk_id)) {
+        if (const Chunk* chunk = arena_get(&dim->chunks, empty_chunk_id)) {
+            dim->chunk_lookup.erase(chunk->coord);
+        }
         arena_remove(&dim->chunks, empty_chunk_id);
     }
     return removed;
@@ -353,6 +344,32 @@ Color resolve_mesh_color(const MeshInstance* mesh) {
         }
     }
     return color;
+}
+
+Vector3 resolve_mesh_emission(const MeshInstance* mesh) {
+    Vector3 emission{};
+    if (!mesh) return emission;
+    for (u32 i = 0; i < mesh->materials.count; ++i) {
+        const MaterialLayer& layer = mesh->materials.layers[i];
+        if (!layer.has_emission) continue;
+        const float strength = fmaxf(0.0f, layer.emission);
+        emission = {
+            std::pow(static_cast<float>(layer.emission_color.r) / 255.0f, 2.2f) * strength,
+            std::pow(static_cast<float>(layer.emission_color.g) / 255.0f, 2.2f) * strength,
+            std::pow(static_cast<float>(layer.emission_color.b) / 255.0f, 2.2f) * strength
+        };
+    }
+    return emission;
+}
+
+float resolve_mesh_reflectivity(const MeshInstance* mesh) {
+    float reflectivity = 0.0f;
+    if (!mesh) return reflectivity;
+    for (u32 i = 0; i < mesh->materials.count; ++i) {
+        const MaterialLayer& layer = mesh->materials.layers[i];
+        if (layer.has_reflectivity) reflectivity = clampf(layer.reflectivity, 0.0f, 1.0f);
+    }
+    return reflectivity;
 }
 
 WorldPos player_feet_pos(const Dimension* dim, const PlayerEntity* player) {

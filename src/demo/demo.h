@@ -31,6 +31,7 @@ struct DemoFrameInput {
     bool plus_pressed = false;
     bool minus_pressed = false;
     bool f3_pressed = false;
+    bool p_pressed = false;
     bool f11_pressed = false;
     bool r_pressed = false;
     bool c_pressed = false;
@@ -72,6 +73,10 @@ struct SavedSessionState {
     u32 player_count = 0;
     std::array<SavedPlayerState, max_players> players{};
     std::vector<SavedPaintPixel> painted_pixels{};
+    // Runtime-only source revision for the in-memory paint snapshot. It is intentionally
+    // not serialized: a freshly loaded/generated dimension is captured once, then only
+    // captured again when its paint data actually changes.
+    u64 captured_paint_revision = 0;
 };
 
 struct DemoProfile {
@@ -82,6 +87,7 @@ struct DemoProfile {
     int fov = 90;
     int scale_power = 0;
     int render_radius_chunks = 0;
+    RadianceCascadeSettings lighting{};
     bool fullscreen = false;
     bool show_fps = false;
     u32 session_count = 0;
@@ -133,6 +139,10 @@ struct DemoApp {
     bool color_picker_open = false;
     bool profile_dirty = false;
     double last_profile_save_time = 0.0;
+    void* profile_save_worker = nullptr;
+    u64 debug_profile_paint_snapshots = 0;
+    u64 debug_profile_autosaves_queued = 0;
+    u64 debug_profile_sync_saves = 0;
     DemoProfile profile{};
     std::array<u64, max_players> remote_peer_ids{};
     std::array<u32, max_players> remote_player_ids{};
@@ -152,11 +162,17 @@ struct DemoApp {
     bool landscape_stream_center_valid = false;
     ChunkCoord landscape_stream_center{};
     std::vector<StreamedWorldChunk> streamed_chunks{};
+    u32 debug_landscape_chunks_loaded = 0;
+    u32 debug_landscape_chunks_unloaded = 0;
+    std::array<u32, 3> cave_emissive_mesh_ids = {invalid_id, invalid_id, invalid_id};
+    std::array<Vector3, 3> cave_emissive_base_positions{};
+    float cave_animation_time = 0.0f;
 };
 
 void demo_init(DemoApp* app);
 void demo_shutdown(DemoApp* app);
 void demo_generate_world(DemoApp* app);
+void demo_update_landscape_streaming(DemoApp* app, Dimension* dim, const PlayerEntity* player);
 void demo_draw_menu(DemoApp* app);
 bool demo_paint_at_view(DemoApp* app, const CameraView& view, Color color);
 bool demo_erase_at_view(DemoApp* app, const CameraView& view);
